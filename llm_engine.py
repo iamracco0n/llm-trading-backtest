@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""LLM봇 v1 = qwen3가 지표를 보고 진입·청산을 스스로 판단(완전 자율)."""
+"""LLM봇 v2 = 과매매 억제(프롬프트 규율 + 최소보유시간 레일)."""
 import re
 import json
 import requests
 import config
 
 SYSTEM = (
-    "너는 암호화폐 단타 트레이더다. 지표만 보고 냉정하게 판단한다.\n"
+    "너는 인내심 있는 암호화폐 스윙 트레이더다. 잦은 매매를 극도로 경계한다.\n"
     "규칙:\n"
-    f"- 모의투자다. 1종목당 매수액은 {config.BUY_AMOUNT:,}원 고정, 동시 보유 최대 {config.MAX_POSITION}종목.\n"
-    "- 목표는 총자산 극대화. 손실 관리와 수익 실현을 스스로 결정한다.\n"
-    "- 보유중 종목은 hold(유지) 또는 sell(매도) 중 선택.\n"
-    "- 미보유 종목은 buy(매수) 또는 hold(관망) 중 선택.\n"
-    "- 확신 없으면 무리하게 사지 마라. 반드시 이유를 한 줄로 남겨라.\n"
+    f"- 모의투자다. 1종목당 매수액 {config.BUY_AMOUNT:,}원 고정, 동시 보유 최대 {config.MAX_POSITION}종목.\n"
+    "- ★매매할 때마다 왕복 0.1% 수수료가 나간다. 자주 사고팔면 수수료로 반드시 손해본다.\n"
+    "- ★기본값은 hold(관망/유지)다. 매수·매도는 '분명한 근거'가 있을 때만 한다.\n"
+    "- 작은 등락(±1% 안팎)에 반응하지 마라. 추세가 확실히 꺾이거나(익절), 확실히 살아날 때만 움직여라.\n"
+    "- 익절은 서두르지 마라. +0.5% 먹자고 팔면 수수료 빼면 남는 게 없다. 최소 +3% 이상 목표.\n"
+    "- 손절은 추세가 확실히 무너졌을 때. 노이즈성 하락엔 버텨라.\n"
+    "- 확신 없으면 사지도 팔지도 마라(hold). 반드시 이유를 한 줄로.\n"
     "- 출력은 오직 JSON. 설명 문장 금지."
 )
 
@@ -101,12 +103,19 @@ class LLMBot:
 
         dmap = {d.get("ticker"): d for d in decisions if isinstance(d, dict)}
 
-        # 1) 매도 먼저 (슬롯 확보)
+        # 1) 매도 먼저 — 최소보유시간 레일(뇌동매매 원천차단)
         for t in list(p.positions.keys()):
             d = dmap.get(t)
-            if d and d.get("action") == "sell" and t in snapshot:
-                price = snapshot[t]["current_price"]
-                p.sell(t, price, ts, "LLM매도:" + str(d.get("reason", ""))[:40])
+            if not (d and d.get("action") == "sell" and t in snapshot):
+                continue
+            pos = p.positions[t]
+            price = snapshot[t]["current_price"]
+            hold_h = (ts - pos["buy_time"]).total_seconds() / 3600
+            profit = price / pos["buy_price"] - 1
+            # 아직 어린 포지션은 매도 금지 (단 큰 손실이면 긴급 손절 허용)
+            if hold_h < config.MIN_HOLD_HOURS_LLM and profit > config.EMERGENCY_STOP:
+                continue
+            p.sell(t, price, ts, "LLM매도:" + str(d.get("reason", ""))[:40])
 
         # 2) 매수
         for t, d in dmap.items():
