@@ -17,6 +17,7 @@ from regime_adaptive import RegimeAdaptiveBot, classify_regime
 
 CADENCE = 6      # 시간봉 6개 = 6시간마다 판단
 WARMUP = 65      # 시간봉 워밍업(ma60)
+USE_LLM = False  # --llm 시 LLM 국면분류 봇 추가
 
 
 def load_long(days=90, to_date=None, tag="recent"):
@@ -55,12 +56,15 @@ def run(days=90, to_date=None, tag="recent"):
     bots = {
         "추세추종": RuleBot(Paper("추세추종")),
         "평균회귀": MeanRevBot(Paper("평균회귀")),
-        "국면적응v4": RegimeAdaptiveBot(Paper("국면적응v4")),
+        "국면적응(규칙)": RegimeAdaptiveBot(Paper("국면적응(규칙)")),
     }
+    if USE_LLM:
+        from regime_llm import LLMRegimeBot
+        bots["국면적응(LLM)"] = LLMRegimeBot(Paper("국면적응(LLM)"))
     reg = Counter()
-    # BTC 국면 추이(구간이 다국면인지 확인용)
     btc_reg_timeline = []
-    for i in idx:
+    t0 = time.time()
+    for n, i in enumerate(idx):
         ts = clock[i]
         snap = {}
         for t, c in candles.items():
@@ -76,6 +80,8 @@ def run(days=90, to_date=None, tag="recent"):
             reg[classify_regime(d)] += 1
         if ref in snap:
             btc_reg_timeline.append(classify_regime(snap[ref]))
+        if USE_LLM and (n % 10 == 0 or n == len(idx) - 1):
+            print(f"[bt] {n+1}/{len(idx)} {ts} | {time.time()-t0:.0f}s", flush=True)
 
     def stat(paper):
         ec = paper.equity_curve; end = ec[-1][1] if ec else config.START_KRW
@@ -97,15 +103,28 @@ def run(days=90, to_date=None, tag="recent"):
     print("=" * 64)
     for name, b in bots.items():
         e, r, m, n, w = stat(b.paper)
-        print(f"  {name:<14} {e:>11,} {r:>7} {m:>7} {n:>5} {w:>6}")
+        print(f"  {name:<16} {e:>11,} {r:>7} {m:>7} {n:>5} {w:>6}")
     print("=" * 64)
+    # LLM 국면판단이 규칙과 얼마나 일치했나
+    for name, b in bots.items():
+        if hasattr(b, "agree") and b.total:
+            print(f"  ※ {name} 국면판단이 규칙과 일치: {b.agree}/{b.total} ({100*b.agree//b.total}%)")
 
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=90)
-    ap.add_argument("--to", type=str, default=None, help="구간 끝 시점(과거 OOS). 예 '2026-04-30 00:00:00'")
+    ap.add_argument("--to", type=str, default=None, help="구간 끝 시점(과거 OOS)")
     ap.add_argument("--tag", type=str, default="recent")
+    ap.add_argument("--llm", action="store_true", help="LLM 국면분류 봇 추가")
+    ap.add_argument("--cpu", action="store_true", help="순수 CPU 추론")
+    ap.add_argument("--model", type=str, default=None, help="LLM 모델 (예 qwen3:8b)")
     a = ap.parse_args()
+    if a.llm:
+        USE_LLM = True
+    if a.cpu:
+        config.NUM_GPU = 0
+    if a.model:
+        config.LLM_MODEL = a.model
     run(a.days, to_date=a.to, tag=a.tag)

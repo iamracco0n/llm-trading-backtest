@@ -38,8 +38,9 @@ def classify_regime(d):
 
 
 class RegimeAdaptiveBot:
-    def __init__(self, paper):
+    def __init__(self, paper, allow_short=True):
         self.paper = paper
+        self.allow_short = allow_short   # False면 하락장에 숏 대신 현금(현물용)
         self.regime_log = []
 
     def _regimes(self, ts, snapshot):
@@ -102,10 +103,11 @@ class RegimeAdaptiveBot:
                 if d["current_price"] <= d["bb_lower"] and d["rsi"] <= MR_RSI_BUY \
                    and d["return_1h"] > KNIFE_1H:
                     cands.append((1, d["rsi"], t, d["current_price"], "meanrev"))
-            elif reg == "down":
+            elif reg == "down" and self.allow_short:
                 # 하락장 → 숏 (하락에 베팅). 과매도(반등위험) 아닐 때, MACD 하향 확인
                 if d["rsi"] >= 38 and d["macd"] < d["signal"]:
                     cands.append((2, d["rsi"], t, d["current_price"], "short"))
+            # 하락장 + 숏금지(현물) → 현금 방어(진입 안 함)
         cands.sort(key=lambda x: (x[0], x[1]))
         for _, _, t, price, strat in cands:
             if p.n_positions() >= config.MAX_POSITION:
