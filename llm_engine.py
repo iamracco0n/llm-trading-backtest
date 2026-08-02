@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
-"""LLM봇 v2 = 과매매 억제(프롬프트 규율 + 최소보유시간 레일)."""
+"""LLM봇 = qwen3:14b가 지표를 보고 진입·청산을 스스로 판단(완전 자율)."""
 import re
 import json
 import requests
 import config
 
 SYSTEM = (
-    "너는 인내심 있는 암호화폐 스윙 트레이더다. 잦은 매매를 극도로 경계한다.\n"
+    "너는 규율 있는 암호화폐 스윙 트레이더다. 좋은 기회는 확실히 잡되, 잡소리(노이즈)엔 안 흔들린다.\n"
     "규칙:\n"
-    f"- 모의투자다. 1종목당 매수액 {config.BUY_AMOUNT:,}원 고정, 동시 보유 최대 {config.MAX_POSITION}종목.\n"
-    "- ★매매할 때마다 왕복 0.1% 수수료가 나간다. 자주 사고팔면 수수료로 반드시 손해본다.\n"
-    "- ★기본값은 hold(관망/유지)다. 매수·매도는 '분명한 근거'가 있을 때만 한다.\n"
-    "- 작은 등락(±1% 안팎)에 반응하지 마라. 추세가 확실히 꺾이거나(익절), 확실히 살아날 때만 움직여라.\n"
-    "- 익절은 서두르지 마라. +0.5% 먹자고 팔면 수수료 빼면 남는 게 없다. 최소 +3% 이상 목표.\n"
-    "- 손절은 추세가 확실히 무너졌을 때. 노이즈성 하락엔 버텨라.\n"
-    "- 확신 없으면 사지도 팔지도 마라(hold). 반드시 이유를 한 줄로.\n"
-    "- 출력은 오직 JSON. 설명 문장 금지."
+    f"- 모의투자. 1종목당 {config.BUY_AMOUNT:,}원 고정, 동시 보유 최대 {config.MAX_POSITION}종목.\n"
+    "- ★매수 신호: 상승추세(가격>MA20>MA60) + RSI 과열아님(70미만) + MACD 상향 이면 '분명한 기회'다 → 매수하라. 완벽한 확신 기다리지 마라, 셋업이 좋으면 진입.\n"
+    "- ★현금만 쥐고 아무것도 안 하는 것도 손해다(기회비용). 상승 종목이 보이면 놓치지 말고 최대 3종목까지 담아라.\n"
+    "- 매수 금지: 하락추세거나 RSI 과열(70+)이면 사지 마라. 애매하면(횡보·근거 약함) 관망.\n"
+    "- 매도: +3% 익절 목표 / 추세 확실히 붕괴 or 손실 -4%면 손절. 작은 노이즈 등락(±1%)엔 버텨라(왕복 수수료 0.1%).\n"
+    "- 요지: 과매매도 동결도 아닌 '규율 있는 매매'. 좋은 셋업=진입, 나쁜 셋업=관망, 애매=hold.\n"
+    "- 반드시 이유 한 줄. 출력은 오직 JSON."
 )
 
 OUT_SPEC = (
@@ -50,16 +49,49 @@ def _fmt_market(snapshot):
     return "\n".join(lines)
 
 
+# 구조화 출력 스키마 — 모델이 무조건 이 형식으로 뱉게 강제 (ollama format)
+OUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "action": {"type": "string", "enum": ["buy", "sell", "hold"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["ticker", "action", "reason"],
+            },
+        }
+    },
+    "required": ["decisions"],
+}
+
+
 def _parse(text):
+    # <think> 제거 후 첫 JSON 오브젝트 추출
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     m = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not m:
         return []
     try:
         obj = json.loads(m.group(0))
-        return obj.get("decisions", [])
     except Exception:
         return []
+    if isinstance(obj, dict) and isinstance(obj.get("decisions"), list):
+        return obj["decisions"]
+    # 폴백: 모델이 {"KRW-BTC":"hold",...} 또는 {"KRW-BTC":{"action":..}} 로 뱉는 경우
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, str):
+                out.append({"ticker": k, "action": v, "reason": ""})
+            elif isinstance(v, dict) and "action" in v:
+                out.append({"ticker": k, "action": v.get("action"),
+                            "reason": v.get("reason", "")})
+    return out
 
 
 def ask_llm(paper, snapshot, ts):
@@ -79,10 +111,12 @@ def ask_llm(paper, snapshot, ts):
         ],
         "stream": False,
         "think": False,
-        "format": "json",
+        "format": OUT_SCHEMA,
         "options": {"temperature": config.LLM_TEMPERATURE},
     }
-    r = requests.post(config.OLLAMA_URL, json=payload, timeout=300)
+    if config.NUM_GPU is not None:
+        payload["options"]["num_gpu"] = config.NUM_GPU  # 0 = 순수 CPU
+    r = requests.post(config.OLLAMA_URL, json=payload, timeout=config.LLM_TIMEOUT)
     r.raise_for_status()
     content = r.json()["message"]["content"]
     return _parse(content)
@@ -103,7 +137,7 @@ class LLMBot:
 
         dmap = {d.get("ticker"): d for d in decisions if isinstance(d, dict)}
 
-        # 1) 매도 먼저 — 최소보유시간 레일(뇌동매매 원천차단)
+        # 1) 매도 먼저 (슬롯 확보) — 최소보유시간 레일 적용
         for t in list(p.positions.keys()):
             d = dmap.get(t)
             if not (d and d.get("action") == "sell" and t in snapshot):
@@ -128,4 +162,5 @@ class LLMBot:
             price = snapshot[t]["current_price"]
             p.buy(t, price, ts, reason="LLM매수:" + str(d.get("reason", ""))[:40])
 
+        # 결정 로깅(이유 보존)
         self.decision_log.append({"ts": str(ts), "decisions": decisions})
