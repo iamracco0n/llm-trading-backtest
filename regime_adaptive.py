@@ -42,9 +42,13 @@ class RegimeAdaptiveBot:
         self.paper = paper
         self.regime_log = []
 
+    def _regimes(self, ts, snapshot):
+        """국면 판단(규칙). 서브클래스가 LLM 판단으로 오버라이드 가능."""
+        return {t: classify_regime(d) for t, d in snapshot.items()}
+
     def step(self, ts, snapshot):
         p = self.paper
-        regimes = {t: classify_regime(d) for t, d in snapshot.items()}
+        regimes = self._regimes(ts, snapshot)
 
         # ---- 청산: 롱(추세/평균회귀) / 숏 각각의 규칙 ----
         for t in list(p.positions.keys()):
