@@ -9,10 +9,11 @@ import pandas as pd
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 
 
-def _fetch_paginated(ticker, interval, total):
-    """count>200 이면 to= 로 과거로 페이지네이션해서 이어붙인다."""
+def _fetch_paginated(ticker, interval, total, to_start=None):
+    """count>200 이면 to= 로 과거로 페이지네이션해서 이어붙인다.
+    to_start 지정 시 그 시점 이전으로 total개(=과거 구간 out-of-sample용)."""
     frames = []
-    to = None
+    to = to_start
     remaining = total
     while remaining > 0:
         n = min(200, remaining)

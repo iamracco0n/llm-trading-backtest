@@ -15,38 +15,38 @@ from rule_engine import RuleBot
 from meanrev_backtest import MeanRevBot
 from regime_adaptive import RegimeAdaptiveBot, classify_regime
 
-CACHE = os.path.join(os.path.dirname(__file__), "cache", "long_60m_90d.pkl")
 CADENCE = 6      # 시간봉 6개 = 6시간마다 판단
 WARMUP = 65      # 시간봉 워밍업(ma60)
 
 
-def load_long(days=90):
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    if os.path.exists(CACHE):
-        with open(CACHE, "rb") as f:
-            print("[data] 캐시 사용")
+def load_long(days=90, to_date=None, tag="recent"):
+    cache = os.path.join(os.path.dirname(__file__), "cache", f"long_60m_{days}d_{tag}.pkl")
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    if os.path.exists(cache):
+        with open(cache, "rb") as f:
+            print(f"[data] 캐시 사용 ({tag})")
             return pickle.load(f)
     base_bars = days * 24 + 100        # 시간봉
     high_bars = days + 120             # 일봉(워밍업 여유)
     out = {}
     for i, t in enumerate(config.COINS):
         print(f"[data] ({i+1}/{len(config.COINS)}) {t}")
-        m60 = _fetch_paginated(t, "minute60", base_bars)
+        m60 = _fetch_paginated(t, "minute60", base_bars, to_start=to_date)
         time.sleep(0.15)
-        mday = _fetch_paginated(t, "day", high_bars)
+        mday = _fetch_paginated(t, "day", high_bars, to_start=to_date)
         if m60 is None or mday is None or len(m60) < 200 or len(mday) < 40:
             print(f"[data]   {t} 데이터 부족 → 제외")
             continue
         out[t] = {"m5": m60, "m4h": mday}   # 키 재사용(base/high)
         time.sleep(0.2)
-    with open(CACHE, "wb") as f:
+    with open(cache, "wb") as f:
         pickle.dump(out, f)
     print(f"[data] 저장 (종목 {len(out)})")
     return out
 
 
-def run(days=90):
-    candles = load_long(days)
+def run(days=90, to_date=None, tag="recent"):
+    candles = load_long(days, to_date=to_date, tag=tag)
     ref = "KRW-BTC" if "KRW-BTC" in candles else list(candles)[0]
     clock = candles[ref]["m5"].index
     idx = list(range(WARMUP, len(clock), CADENCE))
@@ -102,4 +102,10 @@ def run(days=90):
 
 
 if __name__ == "__main__":
-    run(90)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=90)
+    ap.add_argument("--to", type=str, default=None, help="구간 끝 시점(과거 OOS). 예 '2026-04-30 00:00:00'")
+    ap.add_argument("--tag", type=str, default="recent")
+    a = ap.parse_args()
+    run(a.days, to_date=a.to, tag=a.tag)
