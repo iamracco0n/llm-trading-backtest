@@ -2,3 +2,5 @@ pyupbit
 pandas
 numpy
 requests
+finance-datareader   # 국내주식 일봉(KRX)
+# DART 공시는 표준 urllib만 사용(추가 의존성 없음)

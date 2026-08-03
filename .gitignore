@@ -4,3 +4,7 @@ __pycache__/
 cache/
 results/
 *.log
+
+# 토스 API 키(절대 커밋 금지)
+.env
+toss_secret*
