@@ -123,7 +123,7 @@ def simulate(data, slip, require_catalyst, cat_ts):
     avg = sum(t["ret_pct"] for t in trades) / len(trades) if trades else 0
     return {"ret": (end_v / START_KRW - 1) * 100, "mdd": mdd * 100,
             "n": len(trades), "win": 100 * len(wins) / len(trades) if trades else 0,
-            "avg": avg, "cal": (cal[0], cal[-1]), "trades": trades}
+            "avg": avg, "cal": (cal[0], cal[-1]), "trades": trades, "equity": equity}
 
 
 def run(slip=0.003):

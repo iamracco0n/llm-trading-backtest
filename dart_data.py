@@ -86,6 +86,56 @@ def get_disclosures(corp_code, bgn, end):
     return out
 
 
+def get_catalyst_events(corp_code, bgn, end):
+    """촉매 공시만 [(rcept_dt, rcept_no, report_nm), ...] (본문 판정용 rcept_no 포함)."""
+    out = []
+    page = 1
+    while True:
+        p = urllib.parse.urlencode({
+            "crtfc_key": _key(), "corp_code": corp_code,
+            "bgn_de": bgn, "end_de": end, "page_no": page, "page_count": 100})
+        with urllib.request.urlopen(f"{BASE}/list.json?" + p, timeout=15) as r:
+            j = json.loads(r.read())
+        if j.get("status") != "000":
+            break
+        for it in j.get("list", []):
+            if any(k in it["report_nm"] for k in CATALYST_KW):
+                out.append((it["rcept_dt"], it["rcept_no"], it["report_nm"].strip()))
+        if page >= int(j.get("total_page", 1)):
+            break
+        page += 1
+        time.sleep(0.05)
+    return out
+
+
+def fetch_document_text(rcept_no, max_chars=3500):
+    """공시 원본(document.xml zip) → 태그 제거 평문(앞 max_chars). 핵심 사실이 앞에 몰림."""
+    import io as _io
+    import re as _re
+    url = f"{BASE}/document.xml?crtfc_key={_key()}&rcept_no={rcept_no}"
+    raw = urllib.request.urlopen(url, timeout=30).read()
+    try:
+        z = zipfile.ZipFile(_io.BytesIO(raw))
+        body = z.read(z.namelist()[0])
+    except zipfile.BadZipFile:
+        return ""
+    txt = None
+    for enc in ("utf-8", "euc-kr", "cp949"):
+        try:
+            txt = body.decode(enc); break
+        except UnicodeDecodeError:
+            continue
+    if txt is None:
+        return ""
+    # head/style/script 및 남은 CSS 규칙 제거(공시 앞부분 CSS가 본문 밀어냄)
+    txt = _re.sub(r"(?is)<head.*?</head>", " ", txt)
+    txt = _re.sub(r"(?is)<(style|script)[^>]*>.*?</\1>", " ", txt)
+    txt = _re.sub(r"<[^>]+>", " ", txt)
+    txt = _re.sub(r"(?s)\.[A-Za-z_][\w-]*\s*\{[^}]*\}", " ", txt)  # 인라인 CSS 규칙
+    txt = _re.sub(r"\s+", " ", txt).strip()
+    return txt[:max_chars]
+
+
 def build_catalyst_dates(stock_codes, bgn, end, use_cache=True):
     """{stock_code: set('YYYYMMDD' 촉매공시 날짜)}."""
     os.makedirs(CACHE_DIR, exist_ok=True)
