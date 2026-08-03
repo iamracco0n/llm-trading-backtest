@@ -12,6 +12,11 @@
 데이터=FinanceDataReader(무료). 검증 후 실행 레이어만 토스 API로 교체하면 실전(Stage 1).
 사용: python3 forward_paper.py         (오늘분 진행)
       python3 forward_paper.py --status (상태만 조회)
+      python3 forward_paper.py --force  (미확정 봉이어도 강제 진행 — 테스트용)
+
+⚠️ 장중 실행 금지: 장중 일봉은 '현재가'라 미완성인데, 그걸로 하루를 처리해버리면
+last_date가 소진돼 정작 마감 후 cron이 스킵된다(멱등성의 역효과). SETTLE 이후에만
+당일 봉을 확정으로 인정한다.
 """
 import os
 import json
@@ -24,6 +29,17 @@ from trend_backtest import (get_universe, START_KRW, MAX_POS, POS_KRW,
                             CH_MULT, FEE_BUY, FEE_SELL, SLIP)
 
 STATE = os.path.join(os.path.dirname(__file__), "cache", "paper_state.json")
+
+# 한국장 마감 15:30 KST. 데이터 제공처 종가 확정에 여유를 둔 시각 이후만 '확정 봉'으로 본다.
+SETTLE = dt.time(16, 0)
+
+
+def bar_settled(bar_date, now=None):
+    """bar_date(당일 최신 일봉의 날짜)가 확정된 봉인지. 지난 거래일이면 무조건 확정."""
+    now = now or dt.datetime.now()
+    if bar_date < now.date():
+        return True
+    return now.time() >= SETTLE
 
 
 def _blank_state():
@@ -66,7 +82,7 @@ def fetch(codes, days=280):
     return out
 
 
-def run(status_only=False):
+def run(status_only=False, force=False):
     s = load_state()
     if not s["universe"]:
         s["universe"] = [[c, n] for c, n in get_universe()]
@@ -83,6 +99,10 @@ def run(status_only=False):
         print("데이터 없음"); return
     today = max(df.index[-1] for df in data.values())
     tstr = today.strftime("%Y-%m-%d")
+    if not force and not bar_settled(today.date()):
+        print(f"[wait] {tstr} 봉이 아직 미확정(장중). {SETTLE.strftime('%H:%M')} 이후 실행 — "
+              "상태 변경 없음")
+        _report(s, name, {}, [], s["pending"], None); return
     if s["last_date"] == tstr:
         print(f"[skip] {tstr} 이미 처리됨 (장 열린 새 날에 다시 실행)")
         _report(s, name, {}, [], [], today); return
@@ -194,5 +214,6 @@ def _report(s, name, acts, new_sig, pending, today):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--status", action="store_true", help="상태만 조회")
+    ap.add_argument("--force", action="store_true", help="미확정 봉이어도 강제 진행(테스트용)")
     a = ap.parse_args()
-    run(status_only=a.status)
+    run(status_only=a.status, force=a.force)
