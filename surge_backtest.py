@@ -197,6 +197,7 @@ def run(slip=0.003):
         print("  베스트:", ", ".join(f"{t['name']} {t['ret_pct']:+.0f}%" for t in best))
         print("  워스트:", ", ".join(f"{t['name']} {t['ret_pct']:+.0f}%" for t in worst))
     print("=" * 60)
+    return equity, trades
 
 
 if __name__ == "__main__":
