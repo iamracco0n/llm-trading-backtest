@@ -29,11 +29,17 @@ B의 신호 빈도(14개월 61건)면 대략 8개월치다. 이 스크립트는 
 """
 import os
 import json
+import socket
 import argparse
 import datetime as dt
 
 import pandas as pd
 import FinanceDataReader as fdr
+
+# ⚠️ fdr.DataReader는 소켓 타임아웃이 없다. 응답이 끊긴 연결을 잡고 무한 대기하며,
+# cron이라 매일 하나씩 좀비가 쌓인다(2026-08-04 실제 발생: B 첫 실행이 46분간 CPU 11초로
+# 멈춰 있었고 연결만 ESTABLISHED였다). 전역 소켓 타임아웃으로 끊는다.
+socket.setdefaulttimeout(30)
 
 from surge_backtest import (get_universe, START_KRW, MAX_POS, POS_KRW, VOL_SURGE,
                             UP_MIN, CH_MULT, HARD_STOP, MAX_HOLD, FEE_BUY, FEE_SELL)

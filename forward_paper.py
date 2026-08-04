@@ -20,10 +20,16 @@ last_date가 소진돼 정작 마감 후 cron이 스킵된다(멱등성의 역�
 """
 import os
 import json
+import socket
 import argparse
 import datetime as dt
 import pandas as pd
 import FinanceDataReader as fdr
+
+# ⚠️ fdr.DataReader는 소켓 타임아웃이 없다. 응답이 끊긴 연결을 잡고 무한 대기하며,
+# cron이라 매일 하나씩 좀비가 쌓인다(2026-08-04 실제 발생: B 첫 실행이 46분간 CPU 11초로
+# 멈춰 있었고 연결만 ESTABLISHED였다). 전역 소켓 타임아웃으로 끊는다.
+socket.setdefaulttimeout(30)
 
 from trend_backtest import (get_universe, START_KRW, MAX_POS, POS_KRW,
                             CH_MULT, FEE_BUY, FEE_SELL, SLIP)
