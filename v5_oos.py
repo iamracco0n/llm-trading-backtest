@@ -179,9 +179,11 @@ def cmd_judge(args):
 
 # ─────────────────────────── 4) 알파 ───────────────────────────
 
-def _alpha_tables(events, judg, data, idx_from):
-    """v5_alpha.py와 동일한 계산식: α = 종목수익 − KQ11 수익(같은 구간)."""
-    idx = fdr.DataReader("KQ11", idx_from)
+def _alpha_tables(events, judg, data, idx_from, index="KQ11"):
+    """v5_alpha.py와 동일한 계산식: α = 종목수익 − 벤치지수 수익(같은 구간).
+
+    index: 코스닥 유니버스면 KQ11, 코스피 대형주면 KS11 — 판이 바뀌면 벤치도 바뀌어야 한다."""
+    idx = fdr.DataReader(index, idx_from)
     idx.index = pd.to_datetime(idx.index).tz_localize(None)
     ic = idx["Close"]
     io = idx["Open"] if "Open" in idx else idx["Close"]
