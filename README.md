@@ -6,7 +6,10 @@
 
 실전 배포(젯슨 라이브)는 → **[edge-llm-trading-bot](https://github.com/iamracco0n/edge-llm-trading-bot)**. 여기서 결론 → 저기서 실행.
 
-> 📊 크립토 실험 → [RESULTS.md](RESULTS.md)  📈 국내주식·PEAD·팩터 실험 → [RESULTS_KR.md](RESULTS_KR.md)
+> 📊 크립토 **매매봇** 실험(v1~v4) → [RESULTS.md](RESULTS.md)
+> 📈 국내주식·PEAD·**팩터** 실험 + **크립토 팩터**(v6 · 저변동성 롱숏) → [RESULTS_KR.md](RESULTS_KR.md)
+>
+> *아래 "살아남은 것"의 크립토 저변동성 롱숏은 RESULTS.md가 아니라 **RESULTS_KR.md**의 v6-크립토 절에 있다.*
 
 ---
 
@@ -144,7 +147,7 @@ python v6_crypto.py --full                 # 크립토(상폐 포함)
 
 LLM 판정은 ollama 구조화 출력(JSON 스키마)을 쓴다. qwen3는 **thinking 모델이라 `think:false`가 필수** — 없으면 사고 토큰이 `num_predict`를 다 먹고 본문이 빈 채 반환된다(`done_reason=length`).
 
-**판정 속도**: `LLM_NUM_GPU=99`로 GPU 오프로드하면 같은 697건이 **CPU 13시간 → GPU 42분**이다(기본값 0=CPU는 기존 판정 재현성 유지용). **MoE는 CPU에서 안 빠르다** — qwen3.6:35b(MoE) 22초/건 vs gemma4:31b(Dense) 216초/건. CPU는 메모리 대역폭 병목이라 dense는 토큰마다 전체 가중치를 읽는다.
+**판정 속도**: `LLM_NUM_GPU=99`로 GPU 오프로드하면 같은 697건이 **CPU 13시간 → GPU 42분**이다(기본값 0=CPU는 기존 판정 재현성 유지용). **MoE는 CPU에서 안 빠르다** — qwen3.6:35b(MoE) 22초/건 vs gemma4:31b(Dense) 216초/건. CPU는 메모리 대역폭 병목이라 dense는 토큰마다 전체 가중치를 읽는다. *여기 나오는 `gemma4:31b`는 이 속도 비교용이고, 판정에 실제로 쓴 gemma는 `gemma4:12b`(모델 E)다 — 31b는 CPU로 30시간이 걸린다는 추정이 나와 판정에서 뺐다.*
 
 ---
 
