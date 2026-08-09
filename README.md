@@ -6,7 +6,10 @@
 
 실전 배포(젯슨 라이브)는 → **[edge-llm-trading-bot](https://github.com/iamracco0n/edge-llm-trading-bot)**. 여기서 결론 → 저기서 실행.
 
-> 📊 크립토 실험 → [RESULTS.md](RESULTS.md)  📈 국내주식·PEAD·팩터 실험 → [RESULTS_KR.md](RESULTS_KR.md)
+> 📊 크립토 **매매봇** 실험(v1~v4) → [RESULTS.md](RESULTS.md)
+> 📈 국내주식·PEAD·**팩터** 실험 + **크립토 팩터**(v6 · 저변동성 롱숏) → [RESULTS_KR.md](RESULTS_KR.md)
+>
+> *아래 "살아남은 것"의 크립토 저변동성 롱숏은 RESULTS.md가 아니라 **RESULTS_KR.md**의 v6-크립토 절에 있다.*
 
 ---
 
