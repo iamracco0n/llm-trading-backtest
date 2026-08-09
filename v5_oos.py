@@ -49,6 +49,14 @@ EV_OOS = os.path.join(CACHE, "v5_oos_events.pkl")
 PX_OOS = os.path.join(CACHE, "v5_oos_prices.pkl")
 JG_OOS = os.path.join(CACHE, "v5_oos_judgments.pkl")
 
+
+def jg_path(tag=None):
+    """모델별 판정 캐시 분리. 기존 A(qwen3:30b) 캐시를 절대 덮어쓰지 않는다.
+
+    A는 구세대 qwen3:30b(컷오프 2023-08)로 만든 기준선이라, 모델 교체 실험의
+    비교 대상으로 보존해야 한다."""
+    return JG_OOS if not tag else JG_OOS.replace(".pkl", f"_{tag}.pkl")
+
 EV_IS = os.path.join(CACHE, "v5_earnings_events.pkl")
 JG_IS = os.path.join(CACHE, "v5_earnings_judgments.pkl")
 DELISTED = os.path.join(CACHE, "delisted_prices.pkl")
@@ -128,12 +136,13 @@ def cmd_prices(_):
 # ─────────────────────────── 3) LLM 판정 ───────────────────────────
 
 def cmd_judge(args):
+    dst = jg_path(getattr(args, "tag", None))
     events = pickle.load(open(EV_OOS, "rb"))
-    cache = pickle.load(open(JG_OOS, "rb")) if os.path.exists(JG_OOS) else {}
+    cache = pickle.load(open(dst, "rb")) if os.path.exists(dst) else {}
     uniq = {rn: nm for evs in events.values() for _, rn, nm in evs}
     todo = [(rn, nm) for rn, nm in uniq.items() if rn not in cache]
     print(f"[llm] 대상 {len(uniq)}건 (캐시 {len(uniq)-len(todo)}, 신규 {len(todo)})  "
-          f"host={os.environ.get('OLLAMA_HOST', 'http://localhost:11435')}")
+          f"model={os.environ.get('LLM_MODEL', 'qwen3:30b')} → {os.path.basename(dst)}")
     t0 = time.time()
     consec_fail = 0
     for i, (rn, nm) in enumerate(todo):
@@ -160,7 +169,7 @@ def cmd_judge(args):
             print(f"[llm] 판정 실패({consec_fail}회 연속) rcept={rn} — 캐시에 남기지 않음",
                   flush=True)
             if consec_fail >= 5:
-                pickle.dump(cache, open(JG_OOS, "wb"))
+                pickle.dump(cache, open(dst, "wb"))
                 sys.exit(f"[llm] 연속 5회 실패 — LLM 연결 확인 후 재실행(이어서 진행됨). "
                          f"진행분 {len(cache)}건 저장됨")
             continue
@@ -172,8 +181,8 @@ def cmd_judge(args):
             eta = el / (i + 1) * (len(todo) - i - 1) / 60
             print(f"[llm] {i+1}/{len(todo)}  {nm[:14]} → {cache[rn]['verdict']}"
                   f"({cache[rn]['score']})   ETA {eta:.0f}분", flush=True)
-            pickle.dump(cache, open(JG_OOS, "wb"))
-    pickle.dump(cache, open(JG_OOS, "wb"))
+            pickle.dump(cache, open(dst, "wb"))
+    pickle.dump(cache, open(dst, "wb"))
     print(f"[llm] 완료 {len(cache)}건, {(time.time()-t0)/60:.0f}분")
 
 
@@ -278,9 +287,46 @@ def cmd_alpha(_):
     print("=" * 84)
 
 
+def cmd_modelcmp(args):
+    """같은 이벤트·같은 입력·같은 평가식, 모델만 다른 비교 (A=구세대 vs C=신모델)."""
+    ev = pickle.load(open(EV_OOS, "rb"))
+    px = pickle.load(open(PX_OOS, "rb"))
+    A = pickle.load(open(JG_OOS, "rb"))
+    C = pickle.load(open(jg_path(args.tag), "rb"))
+    common = set(A) & set(C)
+    A = {k: v for k, v in A.items() if k in common}
+    C = {k: v for k, v in C.items() if k in common}
+    agree = sum(1 for k in common if A[k]["verdict"] == C[k]["verdict"])
+    print(f"  공통 {len(common)}건 | 판정 일치율 {100*agree/len(common):.1f}%")
+    print(f"  A(qwen3:30b) {dict(Counter(v['verdict'] for v in A.values()))}")
+    print(f"  C({args.tag}) {dict(Counter(v['verdict'] for v in C.values()))}")
+    aa, alla, sca = _alpha_tables(ev, A, px, "2023-12-01")
+    ac, allc, scc = _alpha_tables(ev, C, px, "2023-12-01")
+    print()
+    print("=" * 92)
+    print(f"  OOS(2024-01~2025-06) 모델 비교 — A: qwen3:30b vs C: {args.tag}")
+    print("  ※ 이벤트·입력(텍스트만)·평가식 전부 동일. 변수는 모델 하나뿐")
+    print("=" * 92)
+    for label, ga, gc, key in (("강한호재", aa, ac, "강한호재"), ("score≥95", sca, scc, "95+")):
+        print(f"  ── {label} ──")
+        for h in HORIZONS:
+            na, _, mda, wa = _s(ga[h].get(key, []))
+            nc, _, mdc, wc = _s(gc[h].get(key, []))
+            if na == 0 and nc == 0:
+                continue
+            d = mdc - mda
+            flag = "  ← C 우위" if d > 0 else ""
+            print(f"    H+{h:<3} A n{na:>3} 중앙{mda:>+6.2f} 승{wa:>3.0f}%  |  "
+                  f"C n{nc:>3} 중앙{mdc:>+6.2f} 승{wc:>3.0f}%   차이 {d:>+6.2f}{flag}")
+        print()
+    print("  판정: C가 전 지평에서 A를 이기고 절대값도 + 여야 '모델이 병목이었다'가 성립")
+    print("=" * 92)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["events", "prices", "judge", "alpha"])
+    ap.add_argument("cmd", choices=["events", "prices", "judge", "alpha", "modelcmp"])
+    ap.add_argument("--tag", help="모델별 판정 캐시 태그(예: qwen36)")
     a = ap.parse_args()
-    {"events": cmd_events, "prices": cmd_prices,
-     "judge": cmd_judge, "alpha": cmd_alpha}[a.cmd](a)
+    {"events": cmd_events, "prices": cmd_prices, "judge": cmd_judge,
+     "alpha": cmd_alpha, "modelcmp": cmd_modelcmp}[a.cmd](a)

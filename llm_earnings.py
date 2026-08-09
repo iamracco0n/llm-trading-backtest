@@ -42,7 +42,11 @@ def judge_earnings(report_nm, body_text, timeout=300):
     payload = {
         "model": MODEL, "prompt": prompt, "system": SYSTEM,
         "stream": False, "format": SCHEMA, "think": False,
-        "options": {"temperature": 0.0, "num_gpu": 0},
+        # num_gpu는 기본 0(CPU) — A(qwen3:30b)·C(qwen3.6:35b) 판정이 이 설정으로 만들어졌으므로
+        # 재현성을 위해 기본값을 바꾸지 않는다. GPU로 돌리려면 LLM_NUM_GPU=99 로 실행.
+        # ⚠️ CPU↔GPU는 부동소수점 차이로 판정이 미세하게 갈릴 수 있다(모델은 동일).
+        "options": {"temperature": 0.0,
+                    "num_gpu": int(os.environ.get("LLM_NUM_GPU", "0"))},
     }
     req = urllib.request.Request(
         OLLAMA_HOST + "/api/generate", data=json.dumps(payload).encode(),
