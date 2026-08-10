@@ -92,6 +92,7 @@
 | `llm_catalyst.py` `surge_llm_backtest.py` | Phase 3 — LLM이 공시 質 판정 |
 | `trend_backtest.py` `trend_regime_backtest.py` | 장투(추세추종) · 국면필터 검증 |
 | `trend_pit_universe.py` | 룩어헤드 검증(시점별 유니버스) |
+| `trend_recent.py` | **최근 N개월 점검** — 국면 필터 on/off 비교 |
 | `delisted_recheck.py` | 생존편향 검증(상폐 종목 되살리기) |
 | `event_base_scan.py` `event_holdout.py` | 이벤트 유형별 base 알파 스캔 + 봉인 홀드아웃 |
 
