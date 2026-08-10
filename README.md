@@ -104,6 +104,7 @@
 | `v5_kospi.py` `v5_net_alpha.py` `llm_cutoff_probe.py` | 판 바꾸기(코스피) · 거래비용 · **LLM 기억오염 실측** |
 | `v5_ab_numbers.py` | **A/B: 텍스트만 vs 텍스트+계산지표** (기각) |
 | `v7_critique.py` | **멀티에이전트 제안→비평** 자기/교차 (기각) |
+| `v8_forward_claude.py` | **프런티어 모델 포워드 검증** — 컷오프 이후만, 봉인 저장 (판정 대기) |
 
 ### v6 — LLM을 팩터 생성기로
 | 파일 | 역할 |
