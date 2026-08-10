@@ -34,7 +34,7 @@
 | 전략 | 성적 | LLM |
 |---|---|---|
 | **한국 장투 (추세추종)** | 4.5년 +150.0%, MDD −19.9%, 벤치(KOSPI +109.4%) 대비 **+40.6%p** | 없음 |
-| **크립토 저변동성 롱숏** | H+5 비용후 검증 **+4.02%**, 승률 88.8% (숏가능·유동성 필터 통과) | 없음 |
+| **크립토 저변동성 롱숏** | H+5 **펀딩비·숏가능성까지 반영 후 +3.87%**, 승률 76% (겹침 보정 t=6.8). H+20 +9.82% / t=3.7 | 없음 |
 
 ---
 
@@ -110,6 +110,7 @@
 | `v6_factor_lab.py` | 팩터 DSL·벡터화 평가기·거래가능 필터 |
 | `v6_llm_mine.py` | LLM 팩터 생성 진화 루프 (다중검정 기록) |
 | `v6_crypto.py` | 크립토 zero-shot 이전 + 롱숏 + 실행가능성 필터 |
+| `v6_funding.py` | **펀딩비·숏가능성 최종 관문** — 실제 펀딩 이력 362심볼, 겹침 보정 (통과) |
 
 ### 실전 검증(포워드)
 | 파일 | 역할 |
@@ -142,6 +143,8 @@ python v5_oos.py events && python v5_oos.py judge && python v5_oos.py alpha
 python v6_factor_lab.py --market kospi     # 엔진 검증(시드 팩터)
 python v6_llm_mine.py --rounds 8           # LLM 팩터 마이닝
 python v6_crypto.py --full                 # 크립토(상폐 포함)
+python v6_funding.py fetch && python v6_funding.py decomp   # 펀딩비·숏가능성 반영
+python v6_funding.py deep                  # 겹침 보정·숏 꼬리 진단
 ```
 
 LLM 판정은 ollama 구조화 출력(JSON 스키마)을 쓴다. qwen3는 **thinking 모델이라 `think:false`가 필수** — 없으면 사고 토큰이 `num_predict`를 다 먹고 본문이 빈 채 반환된다(`done_reason=length`).
