@@ -61,7 +61,16 @@ DEAD = ["LUNAUSDT", "USTUSDT", "SRMUSDT", "ANCUSDT", "MIRUSDT", "FTTUSDT", "WAVE
         "OOKIUSDT", "REEFUSDT", "SCUSDT", "STPTUSDT", "CTKUSDT", "MDXUSDT", "BONDUSDT",
         "IDEXUSDT", "GLMRUSDT", "KLAYUSDT", "MOBUSDT", "RENUSDT", "AGIXUSDT", "OCEANUSDT",
         "SNTUSDT", "UNFIUSDT", "AKROUSDT", "BADGERUSDT", "MDTUSDT", "ALPACAUSDT"]
-STABLE = ("USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP", "EUR", "GBP", "AEUR", "USD1")
+# ⚠️ 스테이블·랩드달러는 반드시 뺀다. 가격이 1달러에 고정되도록 설계돼 변동성이
+# 0에 가까우니 **저변동성 팩터가 무조건 최상위로 뽑는다.** 그런데 수익도 0이라
+# 알파가 아니라 사실상 '시장 숏'이 된다(알파 = 종목수익 − 시장평균이므로).
+# 2026-08-11 포워드 배포 중 발견: 옛 이름만 막아둬서 신규 스테이블이 전부 통과했고
+# XUSD가 검증구간 롱 바구니의 83%, BFUSD 56%, USDE 53%를 차지하고 있었다.
+# 제외 시 H+20 +9.82% → +8.29%(t 3.7 → 3.2)로 16% 깎인다 — 엣지의 원인은 아니었지만
+# 무시할 크기도 아니다. 이름이 아니라 '가격이 1달러 근처에 붙어 있는가'로 걸러야
+# 근본 해결이지만, 우선 목록을 최신화한다.
+STABLE = ("USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP", "EUR", "GBP", "AEUR", "USD1",
+          "USDE", "BFUSD", "XUSD", "RLUSD", "PYUSD", "USDS", "EURI", "USDF", "USD0")
 
 
 def _get(url, tries=3):
