@@ -68,9 +68,15 @@ def top_markets(n=60):
     return [m for m, _ in out[:n]], dict(out)
 
 
-def fetch_1h(market, bars=1400):
-    """1시간봉. 200개씩 끊어서 과거로 거슬러 올라간다."""
-    rows, to = [], None
+def fetch_1h(market, bars=1400, before=None):
+    """1시간봉. 200개씩 끊어서 과거로 거슬러 올라간다.
+
+    ⚠️ 58일(1400봉)로는 아무것도 판별 못 한다 — 거래가 11~17건이라 한두 건이
+    전체를 뒤집는다(M=3.0에서 유니버스만 바꿔도 +51.7 → −6.1 → +0.3 → +50.6).
+    **표본을 늘리는 것이 규칙을 바꾸는 것보다 먼저다.** 3년치면 26,000봉,
+    거래 표본이 수백 건이 되어 그때부터 비교가 의미를 갖는다."""
+    rows = []
+    to = (before.strftime("%Y-%m-%dT%H:%M:%S") if before is not None else None)
     while len(rows) < bars:
         u = f"{UP}/candles/minutes/60?market={market}&count=200"
         if to:
@@ -93,18 +99,25 @@ def fetch_1h(market, bars=1400):
 
 
 def cmd_fetch(args):
+    """--bars 만큼 채운다. 이미 받은 구간은 건드리지 않고 **더 과거만 이어받는다.**"""
     mkts, vol = top_markets(args.n)
-    print(f"[universe] 거래대금 상위 {len(mkts)}개")
-    cache = pickle.load(open(PX, "rb")) if os.path.exists(PX) else {}
+    print(f"[universe] 거래대금 상위 {len(mkts)}개 | 목표 {args.bars}봉 "
+          f"(~{args.bars/24:.0f}일)")
+    old = pickle.load(open(PX, "rb")) if os.path.exists(PX) else ({}, {})
+    cache, oldvol = old if isinstance(old, tuple) else (old, {})
+    vol = {**oldvol, **vol}
     for i, m in enumerate(mkts + ["KRW-BTC"]):
-        if m in cache and len(cache[m]) >= 1300:
+        have = len(cache.get(m, []))
+        if have >= args.bars:
             continue
-        d = fetch_1h(m)
-        if d is not None and len(d) >= 200:
-            cache[m] = d
-        if (i + 1) % 10 == 0:
-            print(f"[fetch] {i+1}/{len(mkts)}  {m} {len(cache.get(m, []))}봉", flush=True)
-            pickle.dump((cache, vol), open(PX, "wb"))
+        d = fetch_1h(m, bars=args.bars,
+                     before=cache[m].index[0] if have else None)
+        if d is not None:
+            cache[m] = (pd.concat([d, cache[m]]).sort_index()
+                        .pipe(lambda x: x[~x.index.duplicated()])) if have else d
+        print(f"[fetch] {i+1}/{len(mkts)+1}  {m:<14} {have} → {len(cache.get(m, []))}봉",
+              flush=True)
+        pickle.dump((cache, vol), open(PX, "wb"))
     pickle.dump((cache, vol), open(PX, "wb"))
     span = max(len(v) for v in cache.values())
     print(f"[fetch] 완료 {len(cache)}종목, 최장 {span}봉 (~{span/24:.0f}일)")
@@ -128,7 +141,20 @@ def btc_regime(_unused=None):
     ⚠️ 1시간봉을 일봉으로 리샘플하면 안 된다 — 수집 구간이 58일이라 ma50이
     대부분 NaN이 되고 국면이 통째로 False로 깔린다(그러면 거래가 0건이 되어
     '전략이 안 통한다'는 착시가 생긴다). **일봉을 따로 받는다.**"""
-    r = _get(f"{UP}/candles/days?market=KRW-BTC&count=200") or []
+    rows, to = [], None
+    while len(rows) < 1500:                      # 3년+ 확보. 200개만 받으면
+        u = f"{UP}/candles/days?market=KRW-BTC&count=200"   # 그 이전이 전부
+        if to:                                   # '위험회피'로 깔려 매수가 0이 된다
+            u += f"&to={to}"
+        r = _get(u)
+        if not r:
+            break
+        rows += r
+        to = r[-1]["candle_date_time_utc"]
+        if len(r) < 200:
+            break
+        time.sleep(0.12)
+    r = rows
     d = pd.DataFrame(r)[["candle_date_time_kst", "trade_price"]]
     d.columns = ["dt", "close"]
     d["dt"] = pd.to_datetime(d["dt"]).dt.normalize()
@@ -230,12 +256,93 @@ def cmd_sweep(args):
     print("  ⚠️ 이 구간은 표본이 한정적이고 격자 탐색이라 다중검정 편향이 있다.")
     print("     '현재 설정이 최적인가'를 보는 용도지, 이 숫자를 그대로 기대하면 안 된다.")
 
+# 젯슨에 실제로 배포된 유니버스(2026-08-10 기준 30종목)
+JETSON = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-XRP", "KRW-DOGE", "KRW-SUI",
+          "KRW-SEI", "KRW-ONDO", "KRW-HBAR", "KRW-LINK", "KRW-AVAX", "KRW-APT",
+          "KRW-TAO", "KRW-RENDER", "KRW-WIF", "KRW-BONK", "KRW-PEPE", "KRW-NEAR",
+          "KRW-WLD", "KRW-XLM", "KRW-ADA", "KRW-ID", "KRW-ENA", "KRW-JTO",
+          "KRW-KAITO", "KRW-SAHARA", "KRW-XPL", "KRW-SHIB", "KRW-PENGU", "KRW-ME"]
+
+
+def cmd_baseline(args):
+    """**2단계 — 지금 배포된 규칙 그대로 장기 구간에 돌린다.**
+
+    파라미터를 고르지 않는다. 젯슨에 실제로 도는 설정(M=3.0, Donchian-20,
+    ma50 필터, BTC 일봉 MA50 국면, 동시보유 3, 5만원 고정)을 그대로 쓴다.
+    여기서 장기 성적이 마이너스면 **파라미터를 어떻게 만져도 안 된다**는 뜻이고,
+    ①진입방식 ②초기손절 ③금액고정 을 손볼 필요조차 없다.
+
+    연도별·국면별로 쪼개서 본다 — 전체 합계 하나로는 '어느 장에서 벌었나'를 못 본다.
+    """
+    cache, vol = pickle.load(open(PX, "rb"))
+    ind = {m: indicators(d) for m, d in cache.items() if len(d) >= 200}
+    regime = btc_regime()
+    uni = [m for m in (JETSON if args.jetson else
+                       [m for m, _ in sorted(vol.items(), key=lambda x: -x[1])][:20])
+           if m in ind]
+    spans = {m: (cache[m].index[0], cache[m].index[-1]) for m in uni}
+    lo = min(v[0] for v in spans.values())
+    hi = max(v[1] for v in spans.values())
+    print(f"[baseline] 유니버스 {len(uni)}종목 | 구간 {lo.date()} ~ {hi.date()} "
+          f"| M={args.mult}")
+    short = [m for m in uni if len(cache[m]) < 5000]
+    if short:
+        print(f"  ⚠️ 이력 짧은 종목({len(short)}개): "
+              f"{', '.join(m.replace('KRW-','') for m in short[:12])}"
+              f"{' ...' if len(short) > 12 else ''}")
+
+    tr = simulate(ind, regime, args.mult, uni)
+    st = stats(tr)
+    if not st:
+        print("  거래 0건"); return
+
+    # 자산곡선(체결 순서대로 복리 아님 — 회당 고정금액이라 단순합)
+    tr_sorted = sorted(tr, key=lambda t: t["out"])
+    eq, peak, mdd = 0.0, 0.0, 0.0
+    for t in tr_sorted:
+        eq += t["ret"]
+        peak = max(peak, eq)
+        mdd = min(mdd, eq - peak)
+
+    print("\n  " + "=" * 68)
+    print(f"  전체   {st['n']}거래 | 누적 {st['sum']:+.1f}% ({st['krw']:+,.0f}원) "
+          f"| 승률 {st['win']:.0f}% | 손익비 {st['pf']:.2f}")
+    print(f"         평균 승 {st['avg_w']:+.2f}% / 평균 패 {st['avg_l']:+.2f}% "
+          f"| 평균 보유 {st['hold']:.0f}시간 | 최대낙폭 {mdd:.1f}%p")
+    print("  " + "=" * 68)
+
+    print("\n  ── 연도별 ──")
+    print(f"  {'연도':<8}{'거래':>6}{'누적%':>10}{'승률%':>8}{'손익비':>8}")
+    for y in sorted({t["out"].year for t in tr}):
+        sub = [t for t in tr if t["out"].year == y]
+        s2 = stats(sub)
+        print(f"  {y:<8}{s2['n']:>6}{s2['sum']:>+10.1f}{s2['win']:>8.0f}"
+              f"{s2['pf']:>8.2f}")
+
+    print("\n  ── 반기별 ──")
+    for y in sorted({t["out"].year for t in tr}):
+        for h, lab in ((1, "상"), (2, "하")):
+            sub = [t for t in tr if t["out"].year == y
+                   and ((t["out"].month <= 6) == (h == 1))]
+            if not sub:
+                continue
+            s2 = stats(sub)
+            print(f"  {y}{lab}반기  {s2['n']:>4}거래  {s2['sum']:>+8.1f}%  "
+                  f"승률 {s2['win']:>3.0f}%  손익비 {s2['pf']:.2f}")
+
+    print(f"\n  BTC 위험선호 일수 {int(regime.sum())}/{len(regime)} "
+          f"({100*regime.sum()/len(regime):.0f}%)")
+    print("\n  판정: 장기 누적이 마이너스면 파라미터 문제가 아니라 전략 문제다.")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["fetch", "sweep"])
+    ap.add_argument("cmd", choices=["fetch", "sweep", "baseline"])
     ap.add_argument("-n", type=int, default=60)
+    ap.add_argument("--bars", type=int, default=1400, help="종목당 목표 봉수")
+    ap.add_argument("--mult", type=float, default=3.0, help="트레일 배수")
+    ap.add_argument("--jetson", action="store_true", help="젯슨 배포 30종목 사용")
     ap.add_argument("--sizes", type=int, nargs="+", default=[20, 40, 60],
                     help="비교할 유니버스 크기들")
     a = ap.parse_args()
-    {"fetch": cmd_fetch, "sweep": cmd_sweep}[a.cmd](a)
+    {"fetch": cmd_fetch, "sweep": cmd_sweep, "baseline": cmd_baseline}[a.cmd](a)
