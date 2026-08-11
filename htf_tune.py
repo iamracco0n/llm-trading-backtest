@@ -461,15 +461,152 @@ def cmd_improve(args):
               f"{(recent['krw'] if recent else 0):>+10,.0f}{mark}")
     print("\n  사전 기준: (a)누적↑ (b)낙폭 악화 없음 (c)2025년 이후에도 개선 — 셋 다여야 통과")
 
+def regimes(kind):
+    """국면 필터 후보들. 전부 BTC **일봉**으로 만들고 {날짜: bool} 로 돌려준다.
+
+    현재 배포판은 'BTC > MA50' 하나뿐인데 **MA50은 후행**이라 하락이 상당히
+    진행된 뒤에야 꺼진다. 같은 문제를 장투에서도 실측했다 — 하락장 43일 중
+    31일(72%)을 통과시켰다.
+
+    **none(대조군)을 반드시 넣는다.** '필터가 있어서 좋았다'를 이 저장소는
+    한 번도 검증한 적이 없다. 없는 게 나을 수도 있다.
+    """
+    rows, to = [], None
+    while len(rows) < 1500:
+        u = f"{UP}/candles/days?market=KRW-BTC&count=200"
+        if to:
+            u += f"&to={to}"
+        r = _get(u)
+        if not r:
+            break
+        rows += r
+        to = r[-1]["candle_date_time_utc"]
+        if len(r) < 200:
+            break
+        time.sleep(0.12)
+    d = pd.DataFrame(rows)[["candle_date_time_kst", "trade_price",
+                            "high_price", "low_price"]]
+    d.columns = ["dt", "close", "high", "low"]
+    d["dt"] = pd.to_datetime(d["dt"]).dt.normalize()
+    d = d.drop_duplicates("dt").sort_values("dt").set_index("dt")
+    c, h, l = d["close"], d["high"], d["low"]
+    pc = c.shift()
+    tr = (h - l).combine((h - pc).abs(), max).combine((l - pc).abs(), max)
+    atr = tr.rolling(14).mean()
+
+    if kind == "none":                                   # E 대조군
+        return pd.Series(True, index=c.index)
+    if kind == "ma50":                                   # 현재 배포판
+        return c > c.rolling(50).mean()
+    if kind == "ma30":                                   # A
+        return c > c.rolling(30).mean()
+    if kind == "ma20":                                   # A
+        return c > c.rolling(20).mean()
+    if kind == "ma50_up":                                # B  위 + 우상향
+        ma = c.rolling(50).mean()
+        return (c > ma) & (ma > ma.shift(10))
+    if kind == "vol_gate":                               # C  변동성 급등 회피
+        ma = c.rolling(50).mean()
+        v = atr / c
+        return (c > ma) & (v < v.rolling(60).quantile(0.8))
+    if kind == "strength":                               # D  추세 강도
+        ma = c.rolling(50).mean()
+        return (c - ma) / atr > 0.5
+    raise ValueError(kind)
+
+
+def cmd_regime(args):
+    """**4단계 — 국면 필터 후보 비교.**
+
+    사전 기준(결과 보기 전 고정, 3단계와 동일):
+      (a) 3년 누적 원화가 현재(ma50)보다 크다
+      (b) 최대낙폭이 현재보다 나쁘지 않다
+      (c) **2025년 이후 약세 구간에서도 현재보다 낫다**
+    셋 다여야 통과. 매매 규칙은 배포판 그대로 두고 **국면 필터만** 바꾼다.
+    """
+    cache, vol = pickle.load(open(PX, "rb"))
+    ind = {m: indicators(d) for m, d in cache.items() if len(d) >= 200}
+    uni = [m for m in JETSON if m in ind]
+    print(f"[regime] 유니버스 {len(uni)}종목 | 매매규칙 고정(M=3.0), 국면만 교체\n")
+    order = [("현재 ma50", "ma50"), ("E 필터없음(대조군)", "none"),
+             ("A ma30", "ma30"), ("A ma20", "ma20"),
+             ("B ma50+우상향", "ma50_up"), ("C 변동성게이트", "vol_gate"),
+             ("D 추세강도", "strength")]
+    print(f"  {'국면 필터':<20}{'허용일%':>8}{'거래':>6}{'누적원':>11}"
+          f"{'승률%':>7}{'손익비':>7}{'최대낙폭':>10}{'2025+':>10}")
+    print("  " + "-" * 79)
+    base = None
+    for name, kind in order:
+        rg = regimes(kind)
+        tr = simulate2(ind, rg, uni)
+        st = kstats(tr)
+        rec = kstats([t for t in tr if t["out"] >= pd.Timestamp("2025-01-01")])
+        if st is None:
+            print(f"  {name:<20}{'거래 0건':>60}")
+            continue
+        if base is None:
+            base = (st, rec)
+        mark = ""
+        if kind != "ma50":
+            ok = (st["krw"] > base[0]["krw"] and st["mdd"] >= base[0]["mdd"]
+                  and rec and rec["krw"] > base[1]["krw"])
+            mark = "  ★통과" if ok else ""
+        print(f"  {name:<20}{100*rg.mean():>8.0f}{st['n']:>6}{st['krw']:>+11,.0f}"
+              f"{st['win']:>7.0f}{st['pf']:>7.2f}{st['mdd']:>+10,.0f}"
+              f"{(rec['krw'] if rec else 0):>+10,.0f}{mark}")
+    print("\n  사전 기준: (a)누적↑ (b)낙폭 악화 없음 (c)2025년 이후에도 개선 — 셋 다여야 통과")
+
+def cmd_detail(args):
+    """**적용 전 마지막 확인 — 후보 국면 필터를 연도·반기별로 쪼갠다.**
+
+    전체 합계가 좋아도 특정 해에만 좋은 것이면 못 쓴다. 기준선(ma50)과 나란히
+    놓고, **모든 해에서 지지 않는지**를 본다. 3년 재측정에서 수익의 96%가 두
+    상승 반기에 몰려 있었으므로 이 확인이 필수다.
+    """
+    cache, vol = pickle.load(open(PX, "rb"))
+    ind = {m: indicators(d) for m, d in cache.items() if len(d) >= 200}
+    uni = [m for m in JETSON if m in ind]
+    kinds = args.kinds or ["ma50", "ma20"]
+    res = {}
+    for k in kinds:
+        res[k] = simulate2(ind, regimes(k), uni)
+    years = sorted({t["out"].year for tr in res.values() for t in tr})
+
+    print(f"[detail] 유니버스 {len(uni)}종목 | 누적 원화\n")
+    print(f"  {'구간':<12}" + "".join(f"{k:>14}" for k in kinds))
+    print("  " + "-" * (12 + 14 * len(kinds)))
+    for y in years:
+        row = f"  {y}년{'':<7}"
+        for k in kinds:
+            st = kstats([t for t in res[k] if t["out"].year == y])
+            row += f"{(st['krw'] if st else 0):>+14,.0f}"
+        print(row)
+    print()
+    for y in years:
+        for hh, lab in ((1, "상"), (2, "하")):
+            row = f"  {y}{lab}반기{'':<4}"
+            any_ = False
+            for k in kinds:
+                sub = [t for t in res[k] if t["out"].year == y
+                       and ((t["out"].month <= 6) == (hh == 1))]
+                st = kstats(sub)
+                if st:
+                    any_ = True
+                row += f"{(st['krw'] if st else 0):>+14,.0f}"
+            if any_:
+                print(row)
+    print("\n  판정: 어느 해에도 기준선(첫 열)보다 나쁘지 않아야 채택할 수 있다.")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["fetch", "sweep", "baseline", "improve"])
+    ap.add_argument("cmd", choices=["fetch", "sweep", "baseline", "improve", "regime", "detail"])
     ap.add_argument("-n", type=int, default=60)
     ap.add_argument("--bars", type=int, default=1400, help="종목당 목표 봉수")
     ap.add_argument("--mult", type=float, default=3.0, help="트레일 배수")
     ap.add_argument("--jetson", action="store_true", help="젯슨 배포 30종목 사용")
+    ap.add_argument("--kinds", nargs="+", help="detail: 비교할 국면 필터들")
     ap.add_argument("--sizes", type=int, nargs="+", default=[20, 40, 60],
                     help="비교할 유니버스 크기들")
     a = ap.parse_args()
-    {"fetch": cmd_fetch, "sweep": cmd_sweep, "baseline": cmd_baseline, "improve": cmd_improve}[a.cmd](a)
+    {"fetch": cmd_fetch, "sweep": cmd_sweep, "baseline": cmd_baseline, "improve": cmd_improve, "regime": cmd_regime, "detail": cmd_detail}[a.cmd](a)
