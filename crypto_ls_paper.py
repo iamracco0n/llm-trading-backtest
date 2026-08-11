@@ -63,6 +63,19 @@ def is_pegged(close):
     return float(close.tail(20).pct_change().std()) < MIN_STD
 
 
+# 토큰화 실물자산(금·주식). **크립토가 아니라서 검증 대상이 아니다** —
+# 백테스트는 크립토 유니버스에서 돌았으므로 이걸 넣으면 검증한 것과 다른 전략을
+# 관측하게 되고, 포워드의 존재 이유가 사라진다.
+#
+# ⚠️ 성질로 거르려 했으나 **실패했다.** BTC 상관 60일 실측:
+#     XAUT 0.59 / QQQB 0.50  vs  TRX 0.55 / HBAR 0.52 / ASTER 0.26
+#   토큰화 실물이 정상 크립토보다 오히려 상관이 높다. XAUT를 자르는 임계값은
+#   TRX·HBAR도 같이 자른다. 변동성으로도 안 된다(1.4% vs 1.2%로 겹친다).
+#   그래서 부득이 이름으로 막는다 — 뚫릴 것을 전제로 아래 감시 장치를 붙였다.
+RWA = ("XAUT", "PAXG", "SPYB", "QQQB", "TSLAB", "NVDAB", "AAPLB", "MSTRB",
+       "COINB", "METAB", "GOOGLB", "AMZNB")
+
+
 def _get(url, tries=3):
     for i in range(tries):
         try:
@@ -128,7 +141,7 @@ def build_baskets():
     """오늘의 롱/숏 바구니. 반환 (long[], short[], 가격맵, 진단)."""
     perp = perp_symbols()
     syms = universe()
-    rows, px, n_peg = [], {}, 0
+    rows, px, n_peg, n_rwa = [], {}, 0, 0
     for i, s in enumerate(syms):
         d = daily(s)
         if d is None:
@@ -143,6 +156,9 @@ def build_baskets():
         if is_pegged(c):                     # 스테이블·랩드달러 배제
             n_peg += 1
             continue
+        if s[:-4] in RWA:                    # 토큰화 금·주식 배제
+            n_rwa += 1
+            continue
         rows.append({"sym": s, "fac": -std20, "shortable": s in perp})
         px[s] = float(c.iloc[-1])
         if (i + 1) % 100 == 0:
@@ -154,7 +170,7 @@ def build_baskets():
     longs = df.nlargest(TOP_N, "fac")["sym"].tolist()
     shorts = df[df["shortable"]].nsmallest(TOP_N, "fac")["sym"].tolist()
     diag = (f"거래가능 {len(df)}개 / 숏가능 {int(df['shortable'].sum())}개 "
-            f"/ 페그자산 제외 {n_peg}개")
+            f"/ 제외: 페그 {n_peg}, 실물토큰 {n_rwa}")
     return longs, shorts, px, diag
 
 
@@ -211,8 +227,10 @@ def cmd_run(args):
             "mark": 0.0, "age": 0,
         })
         print(f"  ▶ 신규 코호트: 롱 {len(longs)} / 숏 {len(shorts)}")
-        print(f"     롱  {', '.join(s.replace('USDT','') for s in longs[:10])}")
-        print(f"     숏  {', '.join(s.replace('USDT','') for s in shorts[:10])}")
+        # ⚠️ 전체를 찍는다. 스테이블 오염(2026-08-11)을 잡아낸 것은 통계가 아니라
+        # 바구니를 눈으로 본 것이었다. 앞 10개만 찍으면 뒤에 낀 것을 못 본다.
+        print(f"     롱  {', '.join(x.replace('USDT','') for x in longs)}")
+        print(f"     숏  {', '.join(x.replace('USDT','') for x in shorts)}")
 
     live = sum(c["mark"] for c in state["cohorts"])
     real = sum(c["ret"] for c in state["closed"])
