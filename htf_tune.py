@@ -334,10 +334,137 @@ def cmd_baseline(args):
           f"({100*regime.sum()/len(regime):.0f}%)")
     print("\n  판정: 장기 누적이 마이너스면 파라미터 문제가 아니라 전략 문제다.")
 
+def simulate2(ind, regime, universe, *, trail=3.0, init_stop=None,
+              rank="mom", risk_krw=None, fixed_krw=BUY_AMOUNT):
+    """개선안 실험용 시뮬레이터. 기본값을 그대로 두면 `simulate()`와 동일하다.
+
+    ① rank   — 후보 정렬. "mom"(현재: 24h 모멘텀 = 제일 펌핑된 것을 산다)
+                "quality"(ma50 위 거리 ÷ ATR = 추세 품질) / "liq"(거래대금)
+    ② init_stop — 초기 손절 배수(ATR). None이면 현재처럼 트레일만 쓴다.
+                진입 직후에도 −trail×ATR을 잃을 수 있는 구조를 좁히는 것.
+                스탑 = max(진입−init×ATR, 최고가−trail×ATR)
+    ③ risk_krw — 위험 균등 사이징. 지정하면 '스탑까지 거리 = risk_krw'가 되도록
+                금액을 정한다(변동성 큰 코인은 적게 산다). None이면 고정 5만원.
+    """
+    cal = sorted(set().union(*[set(ind[m].index) for m in universe]))
+    pos, trades = {}, []
+    for ts in cal:
+        day = ts.normalize()
+        for m in list(pos):
+            if ts not in ind[m].index:
+                continue
+            r = ind[m].loc[ts]
+            if np.isnan(r["atr"]):
+                continue
+            p = pos[m]
+            c = float(r["close"])
+            p["peak"] = max(p["peak"], c)
+            stop = p["peak"] - trail * float(r["atr"])
+            if p.get("init") is not None:
+                stop = max(stop, p["init"])
+            if c <= stop:
+                ret = (c / p["buy"] - 1) * 100 - FEE * 100
+                trades.append({"m": m, "ret": ret, "krw": p["size"] * ret / 100,
+                               "size": p["size"],
+                               "hours": (ts - p["ts"]).total_seconds() / 3600,
+                               "in": p["ts"], "out": ts})
+                del pos[m]
+        if len(pos) >= MAX_POS or not bool(regime.get(day, False)):
+            continue
+        cands = []
+        for m in universe:
+            if m in pos or ts not in ind[m].index:
+                continue
+            r = ind[m].loc[ts]
+            if any(np.isnan(r[k]) for k in ("ma", "dc", "atr", "mom")):
+                continue
+            c, atr = float(r["close"]), float(r["atr"])
+            if c > float(r["dc"]) and c > float(r["ma"]) and atr > 0:
+                key = {"mom": float(r["mom"]),
+                       "quality": (c - float(r["ma"])) / atr,
+                       "liq": float(r.get("val", 0))}[rank]
+                cands.append((key, m, c, atr))
+        cands.sort(reverse=True)
+        for _, m, c, atr in cands:
+            if len(pos) >= MAX_POS:
+                break
+            stop_dist = (init_stop if init_stop is not None else trail) * atr
+            if risk_krw is not None and stop_dist > 0:
+                size = min(risk_krw * c / stop_dist, fixed_krw * 3)   # 3배 상한
+            else:
+                size = fixed_krw
+            pos[m] = {"buy": c, "peak": c, "ts": ts, "size": size,
+                      "init": (c - init_stop * atr) if init_stop else None}
+    return trades
+
+
+def kstats(tr):
+    """원화 기준 통계. 사이징이 변하면 % 합계는 의미가 없다."""
+    if not tr:
+        return None
+    k = np.array([t["krw"] for t in tr])
+    w, l = k[k > 0], k[k <= 0]
+    eq, peak, mdd = 0.0, 0.0, 0.0
+    for t in sorted(tr, key=lambda x: x["out"]):
+        eq += t["krw"]
+        peak = max(peak, eq)
+        mdd = min(mdd, eq - peak)
+    return {"n": len(k), "krw": k.sum(), "win": 100 * len(w) / len(k),
+            "pf": (w.sum() / abs(l.sum())) if len(l) and l.sum() else float("inf"),
+            "mdd": mdd, "avg_size": np.mean([t["size"] for t in tr])}
+
+
+def cmd_improve(args):
+    """**3단계 — ①②③을 하나씩 켜서 기준선과 비교.**
+
+    사전 기준(결과 보기 전 고정): 개선으로 인정하려면 **셋 다** 만족해야 한다.
+      (a) 3년 누적 원화가 기준선보다 크다
+      (b) 최대낙폭(원화)이 기준선보다 나쁘지 않다
+      (c) **최근 약세 구간(2025-01~)에서도 기준선보다 낫다**
+    (c)가 핵심이다 — 수익의 대부분이 2023하·2024하 두 상승 반기에 몰려 있어서,
+    그 구간만 좋아지는 개선은 상승장 과최적화다.
+    """
+    cache, vol = pickle.load(open(PX, "rb"))
+    ind = {m: indicators(d) for m, d in cache.items() if len(d) >= 200}
+    regime = btc_regime()
+    uni = [m for m in JETSON if m in ind]
+    print(f"[improve] 유니버스 {len(uni)}종목 | M=3.0 기준선 대비\n")
+
+    variants = [
+        ("기준선(현재 배포)", {}),
+        ("① 정렬: 추세품질", {"rank": "quality"}),
+        ("② 초기손절 1.5ATR", {"init_stop": 1.5}),
+        ("② 초기손절 2.0ATR", {"init_stop": 2.0}),
+        ("③ 위험균등 사이징", {"risk_krw": 5000}),
+        ("①+② 조합", {"rank": "quality", "init_stop": 1.5}),
+        ("①+②+③ 전부", {"rank": "quality", "init_stop": 1.5, "risk_krw": 5000}),
+    ]
+    base = None
+    print(f"  {'구성':<22}{'거래':>6}{'누적원':>11}{'승률%':>7}{'손익비':>7}"
+          f"{'최대낙폭':>10}{'2025+':>10}")
+    print("  " + "-" * 74)
+    for name, kw in variants:
+        tr = simulate2(ind, regime, uni, **kw)
+        st = kstats(tr)
+        recent = kstats([t for t in tr if t["out"] >= pd.Timestamp("2025-01-01")])
+        if st is None:
+            continue
+        if base is None:
+            base = (st, recent)
+        mark = ""
+        if name != "기준선(현재 배포)":
+            ok = (st["krw"] > base[0]["krw"] and st["mdd"] >= base[0]["mdd"]
+                  and recent and recent["krw"] > base[1]["krw"])
+            mark = "  ★통과" if ok else ""
+        print(f"  {name:<22}{st['n']:>6}{st['krw']:>+11,.0f}{st['win']:>7.0f}"
+              f"{st['pf']:>7.2f}{st['mdd']:>+10,.0f}"
+              f"{(recent['krw'] if recent else 0):>+10,.0f}{mark}")
+    print("\n  사전 기준: (a)누적↑ (b)낙폭 악화 없음 (c)2025년 이후에도 개선 — 셋 다여야 통과")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["fetch", "sweep", "baseline"])
+    ap.add_argument("cmd", choices=["fetch", "sweep", "baseline", "improve"])
     ap.add_argument("-n", type=int, default=60)
     ap.add_argument("--bars", type=int, default=1400, help="종목당 목표 봉수")
     ap.add_argument("--mult", type=float, default=3.0, help="트레일 배수")
@@ -345,4 +472,4 @@ if __name__ == "__main__":
     ap.add_argument("--sizes", type=int, nargs="+", default=[20, 40, 60],
                     help="비교할 유니버스 크기들")
     a = ap.parse_args()
-    {"fetch": cmd_fetch, "sweep": cmd_sweep, "baseline": cmd_baseline}[a.cmd](a)
+    {"fetch": cmd_fetch, "sweep": cmd_sweep, "baseline": cmd_baseline, "improve": cmd_improve}[a.cmd](a)
