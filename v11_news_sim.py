@@ -33,8 +33,8 @@ import pandas as pd
 import v10_agent_sim as V
 from dart_data import get_corp_map, _key, BASE
 
-NEWS = os.path.join(V.CACHE, "v11_news.pkl")
-V.ST = os.path.join(V.CACHE, "v11_state.json")     # v10과 상태 분리
+NEWS = os.path.join(V.CACHE, "v11_news%s.pkl" % os.environ.get("SIM_TAG", ""))
+V.ST = os.path.join(V.CACHE, "v11_state%s.json" % os.environ.get("SIM_TAG", ""))
 
 # **화이트리스트.** 블랙리스트로 걸렀더니 주당 300~500건이 남았다 — 형식 공시가
 # 너무 많아 다 뺄 수 없다. 주가에 실질적으로 영향을 주는 유형만 남긴다.

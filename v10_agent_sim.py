@@ -37,11 +37,14 @@ import FinanceDataReader as fdr
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "cache")
-PX = os.path.join(CACHE, "v10_prices.pkl")
-ST = os.path.join(CACHE, "v10_state.json")
+PX = os.path.join(CACHE, "v10_prices%s.pkl" % os.environ.get("SIM_PX", ""))
+ST = os.path.join(CACHE, "v10_state%s.json" % os.environ.get("SIM_TAG", ""))
 
-START = "2026-06-01"
-END = "2026-08-14"
+# 기간·주기는 환경변수로 바꾼다 — v12(오염 구간 장기)에서 재사용하기 위함.
+START = os.environ.get("SIM_START", "2026-06-01")
+END = os.environ.get("SIM_END", "2026-08-14")
+FREQ = os.environ.get("SIM_FREQ", "W")        # W=주간, M=월간
+ST_TAG = os.environ.get("SIM_TAG", "")
 # ⚠️ 자본 1,000만원. 100만원으로 시작했더니 **주문이 전부 0주로 잘려나갔다** —
 # 삼성전자 34.9만원/주, SK하이닉스 236만원/주라 비중 12~15%로는 1주도 못 산다.
 # 한국 주식은 소수점 매수가 안 되므로 자본이 작으면 대형주 포트폴리오 자체가 불가능하다.
@@ -64,7 +67,7 @@ def cmd_prep(args):
     data = {}
     for i, (c, n, mc) in enumerate(uni):
         try:
-            d = fdr.DataReader(c, "2025-05-01")
+            d = fdr.DataReader(c, os.environ.get("SIM_HIST", "2025-05-01"))
         except Exception:
             continue
         if d is None or len(d) < 150:
@@ -73,7 +76,7 @@ def cmd_prep(args):
         if (i + 1) % 50 == 0:
             print(f"  {i+1}/{len(uni)}", flush=True)
     data["_KS11"] = {"name": "KOSPI", "marcap": 0,
-                     "df": fdr.DataReader("KS11", "2025-05-01")}
+                     "df": fdr.DataReader("KS11", os.environ.get("SIM_HIST", "2025-05-01"))}
     pd.to_pickle(data, PX)
     print(f"[v10] 저장 {len(data)-1}종목")
 
@@ -92,7 +95,17 @@ def decision_dates(data):
     """START~END 사이의 매주 첫 거래일."""
     idx = data["_KS11"]["df"].index
     idx = idx[(idx >= START) & (idx <= END)]
-    return list(pd.Series(idx).groupby(pd.Series(idx).dt.isocalendar().week).first())
+    ser = pd.Series(idx)
+    if FREQ == "M":
+        return list(ser.groupby(ser.dt.to_period("M")).first())
+    # ⚠️ ISO 주차만으로 묶으면 **연도를 넘어 같은 주차가 한 그룹이 된다**
+    # (2025년 1주차 + 2026년 1주차). 단일 연도 구간에서는 안 드러나다가
+    # 장기 시뮬(v12)에서 첫 결정일이 2025-12-29로 잡혀 발견했다. 연도를 함께 묶는다.
+    iso = ser.dt.isocalendar()
+    weeks = list(ser.groupby([iso.year, iso.week]).first())
+    if FREQ == "2W":                      # 격주 — 주간 첫 거래일을 하나 걸러 취한다
+        return weeks[::2]
+    return weeks
 
 
 def snapshot(data, ts, top=200):
