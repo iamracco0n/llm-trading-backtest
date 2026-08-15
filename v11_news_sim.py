@@ -82,7 +82,8 @@ def cmd_news(args):
         key = str(ts.date())
         if key in cache:
             continue
-        bgn = (ts - pd.Timedelta(days=7)).strftime("%Y%m%d")
+        win = int(os.environ.get("SIM_NEWS_WIN", "7"))   # 단타는 2일이면 충분
+        bgn = (ts - pd.Timedelta(days=win)).strftime("%Y%m%d")
         end = ts.strftime("%Y%m%d")
         rows = fetch_news(bgn, end)
         keep = []
@@ -111,7 +112,8 @@ def cmd_show(args):
     V.cmd_show(args)
     cache = pickle.load(open(NEWS, "rb"))
     items = cache.get(str(ts.date()), [])
-    print(f"\n### 직전 7일 공시 {len(items)}건 (접수일 기준, 미래 차단)")
+    win = os.environ.get("SIM_NEWS_WIN", "7")
+    print(f"\n### 직전 {win}일 공시 {len(items)}건 (접수일 기준, 미래 차단)")
     for d, code, name, nm in items[:args.news]:
         print(f"  {d} {code} {name[:9]:<10} {nm[:52]}")
 

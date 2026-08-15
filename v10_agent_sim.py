@@ -96,6 +96,8 @@ def decision_dates(data):
     idx = data["_KS11"]["df"].index
     idx = idx[(idx >= START) & (idx <= END)]
     ser = pd.Series(idx)
+    if FREQ == "D":                       # 단타 — 매 거래일 결정
+        return list(ser)
     if FREQ == "M":
         return list(ser.groupby(ser.dt.to_period("M")).first())
     # ⚠️ ISO 주차만으로 묶으면 **연도를 넘어 같은 주차가 한 그룹이 된다**
@@ -126,6 +128,7 @@ def snapshot(data, ts, top=200):
             "code": c, "name": d["name"][:8],
             "close": float(cl.iloc[-1]),
             "mc": d["marcap"] / 1e12,
+            "r5": float(cl.iloc[-1] / cl.iloc[-6] - 1) * 100,
             "r20": r20 * 100, "r60": (cl.iloc[-1] / cl.iloc[-61] - 1) * 100,
             "rel": (r20 - k20) * 100,
             "vol": float(cl.pct_change().tail(20).std() * 100),
@@ -134,8 +137,15 @@ def snapshot(data, ts, top=200):
             "hi52": (cl.iloc[-1] / cl.tail(250).max() - 1) * 100,
             "vr": float(vol.iloc[-1] / vol.tail(20).mean()) if vol.tail(20).mean() else 0,
         })
-    df = pd.DataFrame(rows).sort_values("mc", ascending=False).head(top)
-    return df
+    df = pd.DataFrame(rows)
+    # 단타는 시총 상위가 아니라 **실제로 움직이는 종목**을 봐야 한다.
+    # SORT=mv 면 (거래량비 × |5일 수익률|) 순으로 급등·급락주를 앞세운다.
+    if os.environ.get("SIM_SORT") == "mv":
+        df["mv"] = df["vr"] * df["r5"].abs()
+        df = df.sort_values("mv", ascending=False)
+    else:
+        df = df.sort_values("mc", ascending=False)
+    return df.head(top)
 
 
 def mark(data, ts, state):
@@ -173,11 +183,11 @@ def cmd_show(args):
         print("### 보유: 없음")
     df = snapshot(data, ts, args.top)
     print(f"\n### 유니버스 {len(df)}종목 (시총순, 단위: 시총 조원 / 나머지 %)")
-    print("code name       시총  종가     r20    r60    rel    변동  MA20   MA60   52고  거래량")
+    print("code name       종가      r5    r20    rel    변동  MA20   52고  거래량")
     for _, r in df.iterrows():
-        print(f"{r['code']} {r['name']:<9}{r['mc']:5.1f} {r['close']:>7,.0f} "
-              f"{r['r20']:>+6.1f} {r['r60']:>+6.1f} {r['rel']:>+6.1f} {r['vol']:>5.1f} "
-              f"{r['ma20']:>+6.1f} {r['ma60']:>+6.1f} {r['hi52']:>+6.1f} {r['vr']:>5.2f}")
+        print(f"{r['code']} {r['name']:<9}{r['close']:>7,.0f} "
+              f"{r['r5']:>+6.1f} {r['r20']:>+6.1f} {r['rel']:>+6.1f} {r['vol']:>5.1f} "
+              f"{r['ma20']:>+6.1f} {r['hi52']:>+6.1f} {r['vr']:>5.2f}")
     print(f"\n### 주문 형식: {{\"buy\": {{\"005930\": 0.2}}, \"sell\": [\"000660\"]}}")
     print(f"### buy 값은 평가자산 대비 비중(최대 {MAX_W:.0%}), 최대 {MAX_POS}종목")
 
