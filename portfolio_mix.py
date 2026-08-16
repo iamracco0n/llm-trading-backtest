@@ -44,10 +44,16 @@ HOLD = 20
 
 
 def series_trend():
-    """장투(국면필터 MA120 = 젯슨 배포 설정) 일별 수익률."""
+    """장투 일별 수익률 — **무필터**(젯슨 배포본과 동일).
+
+    ⚠️ 처음에 `use_regime=True`(지수 국면필터)로 계산했는데 **틀렸다.**
+    이 저장소는 국면필터를 이미 기각했고(수익 −40%p인데 MDD는 −3%p만 개선,
+    2022 하락장에선 오히려 더 나빴다) **젯슨 배포본 `forward_paper.py`에도
+    지수 국면필터가 없다**(있는 것은 종목별 MA120 조건이다).
+    저장소 전체 정합성 감사(v16)에서 발견해 바로잡았다."""
     data = T.load_data()
     regime = T.load_regime()
-    eq, _ = T.simulate(data, regime, use_regime=True)
+    eq, _ = T.simulate(data, regime, use_regime=False)
     s = pd.Series({pd.Timestamp(t): v for t, v in eq}).sort_index()
     return s.pct_change().dropna()
 
