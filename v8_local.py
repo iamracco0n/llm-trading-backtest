@@ -120,7 +120,7 @@ def cmd_compare(args):
     events = pickle.load(open(EV, "rb"))
     sets = {"Claude(Opus 5)": JG}
     for tag, label in (("qwen36", "qwen3.6:35b"), ("gemma31", "gemma4:31b"),
-                       ("gemma12", "gemma4:12b")):
+                       ("glimmer", "muse-glimmer:30b"), ("gemma12", "gemma4:12b")):
         if os.path.exists(dst(tag)):
             sets[label] = dst(tag)
 

@@ -48,13 +48,21 @@ def judge_earnings(report_nm, body_text, timeout=300):
         "options": {"temperature": 0.0,
                     "num_gpu": int(os.environ.get("LLM_NUM_GPU", "0"))},
     }
+    # ⚠️ muse-glimmer:30b 는 유효한 JSON 뒤에 종료토큰 `<|eot|>` 를 그대로 뱉는다
+    # (ollama 가 이 모델의 eot 를 stop 으로 안 잡는다). stop 을 명시해 잘라 준다.
+    # 이미 깨끗한 JSON만 내던 모델(gemma4:31b·qwen3.6:35b)에는 **영향이 없다** —
+    # 그 문자열이 애초에 안 나오므로 stop 이 걸릴 일이 없다. 캐시 재현성 유지.
+    payload["options"]["stop"] = ["<|eot|>", "<|end_of_turn|>", "<|im_end|>"]
     req = urllib.request.Request(
         OLLAMA_HOST + "/api/generate", data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             j = json.loads(r.read())
-        out = json.loads(j["response"])
+        # `raw_decode` 는 **첫 JSON 값만 읽고 뒤에 붙은 것은 무시**한다. stop 이
+        # 안 먹히는 경우(모델이 토큰을 다르게 쓰는 경우)의 2차 방어선이다.
+        # 깨끗한 JSON에는 json.loads 와 결과가 동일하므로 기존 캐시와 어긋나지 않는다.
+        out, _ = json.JSONDecoder().raw_decode(j["response"].strip())
         return {"verdict": out["verdict"], "score": int(out.get("score", 0)),
                 "yoy": out.get("yoy", "")[:60], "reason": out.get("reason", "")[:120]}
     except Exception:

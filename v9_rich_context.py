@@ -116,6 +116,60 @@ def cmd_show(args):
         print()
 
 
+def cmd_judge(args):
+    """같은 차트/수치 컨텍스트를 **로컬 모델**에도 준다.
+
+    v9는 원래 프런티어 모델 전용이었다(show → 사람이 판정 → save). 그래서
+    "정보를 더 주면 나아지나"를 **모델별로** 비교할 수 없었다. 여기서 같은
+    컨텍스트를 로컬 모델에 먹여 2×2를 만든다:
+        {텍스트 전용, 텍스트+차트} × {gemma4:31b, muse-glimmer:30b, Opus}
+
+    **판정 함수·SYSTEM·SCHEMA를 그대로 재사용한다.** `judge_earnings` 에 넘기는
+    body_text 앞에 차트 블록을 붙일 뿐이다. 즉 **바뀌는 것은 주어지는 정보 하나**로,
+    v8 대조군과 정확히 짝이 맞는다. 프롬프트를 새로 쓰면 '프롬프트가 달라서'와
+    '정보가 달라서'가 섞여 무엇이 원인인지 못 가린다.
+    """
+    from llm_earnings import judge_earnings
+    ctx = pickle.load(open(CTX, "rb"))
+    out = dst_local(args.tag)
+    done = json.load(open(out, encoding="utf-8")) if os.path.exists(out) else {}
+    todo = [rn for rn in ctx if rn not in done]
+    model = os.environ.get("LLM_MODEL", "?")
+    gpu = os.environ.get("LLM_NUM_GPU", "0")
+    print(f"[v9local] {len(todo)}건 판정 (캐시 {len(done)}) | model={model} "
+          f"| {'GPU' if gpu != '0' else 'CPU'}", flush=True)
+    import time
+    t0, fail = time.time(), 0
+    for i, rn in enumerate(todo):
+        x = ctx[rn]
+        try:
+            body = fetch_document_text(rn)
+        except Exception:
+            body = ""
+        if not body:
+            fail += 1
+            continue
+        # v8과 같은 함수·같은 스키마. 다른 것은 **앞에 붙은 차트 블록**뿐이다.
+        rich = f"{block(x)}\n\n[공시 본문]\n{body.strip()[:1500]}"
+        r = judge_earnings(x["name"], rich, timeout=900)
+        if r is None:
+            fail += 1
+            continue
+        r["ts"] = dt.datetime.now().isoformat(timespec="seconds")
+        done[rn] = r
+        json.dump(done, open(out, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=1)
+        el = time.time() - t0
+        print(f"  {i+1}/{len(todo)} {x['name'][:12]:<12} {r['verdict']}({r['score']}) "
+              f"| {el/(i+1):.0f}초/건 남은 {(len(todo)-i-1)*el/(i+1)/60:.0f}분",
+              flush=True)
+    print(f"[v9local] 완료 {len(done)}건 (실패 {fail})")
+
+
+def dst_local(tag):
+    return os.path.join(CACHE, f"v9_judgments_{tag}.json")
+
+
 def cmd_save(args):
     new = json.load(open(args.file, encoding="utf-8"))
     done = json.load(open(RICH, encoding="utf-8")) if os.path.exists(RICH) else {}
@@ -148,9 +202,10 @@ def cmd_compare(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["build", "show", "save", "compare"])
+    ap.add_argument("cmd", choices=["build", "show", "judge", "save", "compare"])
     ap.add_argument("-n", type=int, default=33)
     ap.add_argument("--file")
+    ap.add_argument("--tag", help="judge: 저장 태그(로컬 모델용)")
     a = ap.parse_args()
-    {"build": cmd_build, "show": cmd_show,
+    {"build": cmd_build, "show": cmd_show, "judge": cmd_judge,
      "save": cmd_save, "compare": cmd_compare}[a.cmd](a)
