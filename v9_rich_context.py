@@ -154,6 +154,17 @@ def cmd_judge(args):
         r = judge_earnings(x["name"], rich, timeout=900)
         if r is None:
             fail += 1
+            # ⚠️ 실패를 조용히 세기만 하면 원인을 못 본다. 2026-08-27에 65건이
+            # 전부 실패했는데 로그에 숫자만 남아 진단이 늦었다. 진짜 원인은
+            # **aurora RAM 31GB 부족**이었다 — 앞 모델(18GB)이 ollama 기본
+            # 5분 keep-alive 로 남아 있는 채로 다음 모델(22GB)을 올리려 했다.
+            print(f"  실패 {rn} — 미저장 ({fail}건째). 모델 로드/RAM 확인 요망",
+                  flush=True)
+            if fail >= 3 and len(done) == 0:
+                print("  !! 연속 실패 — 모델이 아예 안 올라온 것으로 보고 중단한다.\n"
+                      "     `ssh aurora-server 'ollama ps; free -g'` 로 확인할 것.",
+                      flush=True)
+                return
             continue
         r["ts"] = dt.datetime.now().isoformat(timespec="seconds")
         done[rn] = r

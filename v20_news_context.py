@@ -152,7 +152,13 @@ def cmd_judge(args):
         r = judge_earnings(x["name"], rich, timeout=900)
         if r is None:
             fail += 1
-            print(f"  실패 {rn} — 미저장 ({fail})", flush=True)
+            print(f"  실패 {rn} — 미저장 ({fail}건째)", flush=True)
+            # 연속 실패 = 모델이 안 올라온 것. 65번 헛돌지 말고 일찍 멈춘다
+            # (2026-08-27 aurora RAM 31GB 부족으로 전량 실패한 적 있다).
+            if fail >= 3 and len(done) == 0:
+                print("  !! 연속 실패 — 모델 로드 실패로 보고 중단. "
+                      "`ollama ps; free -g` 확인 요망", flush=True)
+                return
             continue
         r["ts"] = dt.datetime.now().isoformat(timespec="seconds")
         done[rn] = r
