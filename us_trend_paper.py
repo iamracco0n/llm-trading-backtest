@@ -78,8 +78,21 @@ def symbols():
     raise RuntimeError("유니버스 캐시가 없다 — v26 데이터를 먼저 받을 것")
 
 
+def us_today():
+    """미국 동부 기준 '오늘' 날짜. 서머타임(EDT, UTC−4) 가정.
+
+    한국 밤 22:30 은 미국 당일 09:30 개장 시각이다. 즉 **장중에 실행된다.**
+    이때 데이터 소스가 오늘의 **미완성 봉**을 마지막 행으로 줄 수 있는데,
+    그걸 종가로 쓰면 신호가 백테스트와 달라진다(백테스트는 완료된 종가로 신호를
+    만들고 다음 시가에 산다). 그래서 오늘 날짜 행은 잘라낸다."""
+    return (dt.datetime.utcnow() - dt.timedelta(hours=4)).date()
+
+
 def indicators(d):
     d = d.dropna(subset=["Close"])
+    # ⚠️ 장중 실행 시 오늘의 미완성 봉이 붙는다. 신호는 **직전 완료 세션**으로만.
+    cut = us_today()
+    d = d[d.index.date < cut]
     if len(d) < MA_TREND + 30:
         return None
     hi, lo, cl = d["High"], d["Low"], d["Close"]
@@ -135,6 +148,7 @@ def main(a):
           f"슬롯{SLOTS} 국면필터없음")
 
     syms = symbols()
+    print(f"  신호 기준: 미국 {us_today()} **이전** 완료 세션 (장중 미완성 봉 제외)")
     print(f"  유니버스 {len(syms)}종목 조회...", flush=True)
     ind = fetch_all(syms)
     print(f"  조회 {len(ind)}/{len(syms)}종목")
@@ -189,7 +203,8 @@ def main(a):
                 break
             from toss_trade import Toss
             t = Toss()
-            r = t.order(s, amt, "BUY", market="US", confirm=True)
+            # ★ 금액 기반(orderAmount). amt 를 수량 자리에 넘기면 24주를 사려 든다.
+            r = t.order(s, side="BUY", market="US", amount=amt, confirm=True)
             print(f"  ▶ [실주문] {s} ${amt:.2f} → {r}")
         else:
             print(f"  ▶ [페이퍼] 매수 {s} ${amt:.2f} @{px:,.2f} "

@@ -226,32 +226,72 @@ class Toss:
                 reasons.append(f"공인 IP 변경 {EXPECT_IP} → {now}")
         return reasons
 
-    def order(self, symbol, qty, side, price=None, confirm=False, market="KR"):
-        """지정가(price 지정) 또는 시장가(price=None).
+    def order(self, symbol, qty=None, side="BUY", price=None, confirm=False,
+              market="KR", amount=None):
+        """수량 기반(`qty`) 또는 **금액 기반(`amount`)** 주문.
 
-        **`confirm=True` 와 `TOSS_LIVE=1` 이 둘 다 있어야 실제로 나간다.**
-        하나만으로는 절대 안 나간다 — 실수로 켜지는 경로를 하나로 만들지 않는다."""
-        reasons = self._guard(symbol, qty, price, side)
+        ⚠️ **`amount` 는 US MARKET 전용**이다(명세: "금액 기반 주문 (US MARKET 전용)").
+        소수점 매수는 이 경로로만 된다 — 국내는 1주 단위이고 소수점 수량은 400 이다
+        (2026-08-31 실측: 1주 접수 / 0.1주 400).
+
+        ⚠️ 금액을 수량 자리에 넘기면 참사가 난다. $24 를 quantity 로 보내면
+        24주(=$4,400)를 사려 든다. 실제로 그렇게 짜여 있었고 실주문 직전에 잡았다.
+        그래서 **둘 중 정확히 하나만** 받도록 강제한다.
+
+        `confirm=True` 와 `TOSS_LIVE=1` 이 **둘 다** 있어야 실제로 나간다."""
+        if (qty is None) == (amount is None):
+            raise TossError("qty 와 amount 중 정확히 하나만 지정할 것")
+        if amount is not None and market != "US":
+            raise TossError("금액 기반 주문은 US 전용이다 (국내는 1주 단위)")
+        if amount is not None and price is not None:
+            raise TossError("금액 기반 주문은 시장가만 된다 (price 불가)")
+
+        # 한도 검사: 금액 주문은 금액 자체가 노출액이다
+        est = float(amount) if amount is not None else None
+        reasons = (self._guard(symbol, qty, price, side) if qty is not None
+                   else self._guard_amount(est))
         if not confirm:
             reasons.append("confirm=False")
         if reasons:
-            return DryRun({"would": {"symbol": symbol, "qty": qty, "side": side,
+            return DryRun({"would": {"symbol": symbol, "qty": qty,
+                                     "amount": amount, "side": side,
                                      "price": price, "market": market},
                            "blocked_by": reasons})
-        q = float(qty)
-        qs = str(int(q)) if q == int(q) else repr(q)
-        body = {"symbol": symbol, "market": market, "side": side,
-                "quantity": qs,
-                "orderType": "LIMIT" if price else "MARKET"}
-        if price:
-            body["price"] = str(price)
+
+        body = {"symbol": symbol, "market": market, "side": side}
+        if amount is not None:
+            body["orderType"] = "MARKET"
+            body["orderAmount"] = f"{float(amount):.2f}"
+        else:
+            q = float(qty)
+            body["quantity"] = str(int(q)) if q == int(q) else repr(q)
+            body["orderType"] = "LIMIT" if price else "MARKET"
+            if price:
+                body["price"] = str(price)
         return self._call("POST", "/api/v1/orders", body=body)
 
-    def buy(self, symbol, qty, price=None, confirm=False):
-        return self.order(symbol, qty, "BUY", price, confirm)
+    def _guard_amount(self, usd):
+        """금액 기반 주문용 관문. 한도는 원화 기준이므로 환산해 비교한다."""
+        reasons = []
+        if os.environ.get("TOSS_LIVE") != "1":
+            reasons.append("TOSS_LIVE!=1")
+        if usd is None or usd <= 0:
+            reasons.append(f"금액이 잘못됐다: {usd!r}")
+        elif usd * 1400 > MAX_ORDER_KRW:      # 대략 환산(보수적으로 높게)
+            reasons.append(f"1회 한도 초과 약 {usd*1400:,.0f}원 > {MAX_ORDER_KRW:,}")
+        if EXPECT_IP:
+            now = public_ip()
+            if now and now != EXPECT_IP:
+                reasons.append(f"공인 IP 변경 {EXPECT_IP} → {now}")
+        return reasons
 
-    def sell(self, symbol, qty, price=None, confirm=False):
-        return self.order(symbol, qty, "SELL", price, confirm)
+    def buy(self, symbol, qty=None, price=None, confirm=False, market="KR",
+            amount=None):
+        return self.order(symbol, qty, "BUY", price, confirm, market, amount)
+
+    def sell(self, symbol, qty=None, price=None, confirm=False, market="KR",
+             amount=None):
+        return self.order(symbol, qty, "SELL", price, confirm, market, amount)
 
     def cancel(self, order_id, confirm=False):
         if os.environ.get("TOSS_LIVE") != "1" or not confirm:
