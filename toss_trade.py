@@ -126,7 +126,14 @@ class Toss:
         data = None
         if body is not None:
             data = json.dumps(body).encode()
+        # ⚠️ 본문이 없는 POST(주문 취소 등)에도 Content-Type 이 필요하다.
+        # 이걸 빼먹어 취소가 `415 unsupported-content-type` 으로 실패했고,
+        # 시험 주문이 계좌에 남았다(2026-08-31). 주문을 내는 코드가 취소를
+        # 못 하면 그건 안전장치가 아니라 위험이다.
+        if method in ("POST", "PUT", "PATCH"):
             h["Content-Type"] = "application/json"
+            if data is None:
+                data = b"{}"
         req = urllib.request.Request(url, data=data, headers=h, method=method)
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -173,16 +180,44 @@ class Toss:
     def holdings(self, market="KR"):
         return self._call("GET", "/api/v1/holdings", {"market": market}).get("result")
 
-    def orders(self, **params):
-        return self._call("GET", "/api/v1/orders", params or None).get("result")
+    def orders(self, status="OPEN", **params):
+        """주문 목록. ⚠️ `status` 는 **필수**다(OPEN/CLOSED). 빠뜨리면 400 이
+        나는데 응답 본문이 비어 원인이 안 보인다. 기본값을 둬서 잊을 수 없게 한다.
+        OPEN 은 전량 반환이라 페이지네이션이 필요 없다."""
+        params["status"] = status
+        return self._call("GET", "/api/v1/orders", params).get("result")
+
+    def cancel_all(self, market="KR"):
+        """미체결 전량 취소 — **킬스위치**. 이상 시 이것부터 부른다."""
+        out = self.orders(status="OPEN", market=market)
+        lst = out if isinstance(out, list) else (out or {}).get("orders") or []
+        done = []
+        for x in lst:
+            oid = x.get("orderId")
+            if not oid:
+                continue
+            try:
+                self.cancel(oid, confirm=True)
+                done.append(oid)
+            except Exception:
+                pass
+        return {"found": len(lst), "cancelled": len(done)}
 
     # ── 주문 (기본 금지) ─────────────────────────────────────
     def _guard(self, symbol, qty, price, side):
-        """주문 전 관문. 하나라도 걸리면 실주문이 안 나간다."""
+        """주문 전 관문. 하나라도 걸리면 실주문이 안 나간다.
+
+        ⚠️ qty 를 문자열("0.1")로 넘기면 `price * qty` 가 문자열 반복이 되어
+        비교에서 TypeError 가 났다(2026-08-31 실측). 숫자로 강제한다."""
         reasons = []
         if os.environ.get("TOSS_LIVE") != "1":
             reasons.append("TOSS_LIVE!=1")
-        est = (price or 0) * qty
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            reasons.append(f"수량이 숫자가 아니다: {qty!r}")
+            qty = 0.0
+        est = (float(price) if price else 0.0) * qty
         if price and est > MAX_ORDER_KRW:
             reasons.append(f"1회 한도 초과 {est:,.0f} > {MAX_ORDER_KRW:,}")
         if EXPECT_IP:
@@ -203,8 +238,10 @@ class Toss:
             return DryRun({"would": {"symbol": symbol, "qty": qty, "side": side,
                                      "price": price, "market": market},
                            "blocked_by": reasons})
+        q = float(qty)
+        qs = str(int(q)) if q == int(q) else repr(q)
         body = {"symbol": symbol, "market": market, "side": side,
-                "quantity": str(qty),
+                "quantity": qs,
                 "orderType": "LIMIT" if price else "MARKET"}
         if price:
             body["price"] = str(price)
