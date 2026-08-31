@@ -22,7 +22,11 @@ import json
 import os
 
 EXPECT_IP = os.environ.get("TOSS_EXPECT_IP", "103.218.162.176")
-CAP = 200_000
+# 배분: 한국 10만원(원화 유지, 페이퍼) / 미국 $72.5(실전)
+# ⚠️ 예전엔 CAP=200,000 단일이었는데 분할 후에도 안 고쳐서 "잔고 부족"이라는
+#    거짓 경보를 냈다. 점검이 늑대소년이 되면 진짜 경보를 무시하게 된다.
+CAP_KRW = 100_000
+CAP_USD = 72.0
 STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      "cache", "kr_smallcap_state.json")
 
@@ -51,11 +55,17 @@ try:
           f"현재 {ip or '조회실패'} / 등록 {EXPECT_IP}"
           + ("" if ip == EXPECT_IP else "  ← 토스 설정에서 IP 갱신 필요"))
 
-    bp = float(t.buying_power("KRW")["cashBuyingPower"])
+    krw = float(t.buying_power("KRW")["cashBuyingPower"])
+    try:
+        usd = float(t.buying_power("USD")["cashBuyingPower"])
+    except Exception:
+        usd = 0.0
     h = t.holdings()
     mv = h.get("marketValue", {}).get("amount", {}).get("krw")
-    check("3. 잔고", bp >= CAP * 0.95,
-          f"주문가능 {bp:,.0f}원 / 설정자본 {CAP:,}원 · 보유주식 {mv}원")
+    check("3. 잔고(원화)", krw >= CAP_KRW * 0.95,
+          f"{krw:,.0f}원 / 필요 {CAP_KRW:,}원 (국장 페이퍼용, 원화 유지)")
+    check("3b. 잔고(달러)", usd >= CAP_USD * 0.95,
+          f"${usd:,.2f} / 필요 ${CAP_USD:,.0f} (미장 실전) · 보유주식 {mv}원")
 
     c = t.commission("KR")
     check("4. 수수료", c is not None,
@@ -73,10 +83,12 @@ except Exception as e:
 now = dt.datetime.now()
 is_weekday = now.weekday() < 5
 in_session = is_weekday and dt.time(9, 0) <= now.time() <= dt.time(15, 30)
+# 미장 시간(KST 기준 22:30~05:00, EDT 가정)도 같이 본다 — 실전은 미장이다
+us_open = (now.time() >= dt.time(22, 30)) or (now.time() <= dt.time(5, 0))
 check("6. 장 운영", is_weekday,
-      f"{'평일' if is_weekday else '주말/휴일'} · "
-      f"{'정규장 중' if in_session else '장외'}"
-      + ("" if in_session else "  ← 주문은 장중에만"), fatal=False)
+      f"{'평일' if is_weekday else '주말/휴일'} · 국장 "
+      f"{'중' if in_session else '장외'} · 미장 {'중' if us_open else '장외'}",
+      fatal=False)
 
 # 7. 포워드 기록
 if os.path.exists(STATE):
