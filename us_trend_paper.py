@@ -102,7 +102,55 @@ def indicators(d):
             "atr": float(tr.rolling(ATR_N).mean().iloc[-1]),
             "dc": float(hi.rolling(DC_ENTRY).max().shift(1).iloc[-1]),
             "ma": float(cl.rolling(MA_TREND).mean().iloc[-1]),
-            "mom": float(cl.iloc[-1] / cl.iloc[-1 - MOM] - 1)}
+            "mom": float(cl.iloc[-1] / cl.iloc[-1 - MOM] - 1),
+            # ★ 이 봉이 **언제 것인지**. 신선도 검사에 쓴다.
+            "asof": cl.index[-1].date()}
+
+
+def expected_session(today=None):
+    """직전 **완료** 미국 거래일(주말만 고려, 공휴일은 모른다).
+
+    장중(09:30~16:00 ET)에 실행하므로 오늘 봉은 미완성이고, 신호는 어제(직전
+    영업일) 종가로 만들어야 한다."""
+    d = (today or us_today()) - dt.timedelta(days=1)
+    while d.weekday() >= 5:            # 토·일 건너뛰기
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def check_freshness(ind):
+    """데이터가 **예상 직전 거래일** 것인지 확인한다.
+
+    ⚠️ 2026-08-31 첫 실주문이 **8/27 종가**로 신호를 만들었다. 예상은 8/28 이었다.
+    데이터 소스가 최신 세션을 아직 안 올렸는데 코드가 마지막 행을 그냥 썼기 때문이다.
+    그사이 MSTR 은 8/27 $137.40 → 8/28 $127.31 로 −7.3% 빠졌는데, 시스템은
+    그걸 못 보고 "모멘텀 +40.6%" 로 매수했다. **떨어지는 걸 모르고 산 것이다.**
+
+    묵은 신호로 매매하는 것은 백테스트와 다른 전략을 굴리는 것이므로,
+    하루 거르는 손해보다 크다. 어긋나면 **중단한다.**
+    공휴일이면 오탐이 나는데, 그때는 하루 쉬는 것이 맞다
+    (`ALLOW_STALE=1` 로 강제 진행은 가능하게 두되 기본은 중단)."""
+    from collections import Counter
+    dates = Counter(x["asof"] for _, x in ind.values())
+    if not dates:
+        raise RuntimeError("신선도 확인 불가 — 데이터가 없다")
+    mode, n = dates.most_common(1)[0]
+    exp = expected_session()
+    share = 100 * n / len(ind)
+    print(f"  데이터 기준일 {mode} ({share:.0f}% 종목 일치) | 예상 {exp}")
+    if len(dates) > 1:
+        others = ", ".join(f"{d}:{c}" for d, c in dates.most_common()[1:4])
+        print(f"    · 다른 날짜 섞임 — {others}")
+    if mode == exp:
+        return mode
+    behind = (exp - mode).days
+    msg = (f"데이터가 예상보다 {behind}일 묵었다 (기준 {mode} / 예상 {exp}). "
+           f"묵은 신호로 매매하면 백테스트와 다른 전략이 된다.")
+    if os.environ.get("ALLOW_STALE") == "1":
+        print(f"  ⚠️ {msg}  → ALLOW_STALE=1 이라 강제 진행")
+        return mode
+    raise RuntimeError(msg + " 오늘은 매매하지 않는다 "
+                       "(공휴일이면 정상 동작이다. 강제하려면 ALLOW_STALE=1)")
 
 
 def fetch_all(syms):
@@ -154,6 +202,7 @@ def main(a):
     print(f"  조회 {len(ind)}/{len(syms)}종목")
     if len(ind) < len(syms) * 0.7:
         raise RuntimeError("조회 부족 — 신호 왜곡. 오늘은 기록하지 않는다.")
+    asof = check_freshness(ind)     # ★ 묵은 데이터면 여기서 멈춘다
 
     slot = CAP_USD / SLOTS
 
