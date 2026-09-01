@@ -293,6 +293,41 @@ class Toss:
              amount=None):
         return self.order(symbol, qty, "SELL", price, confirm, market, amount)
 
+    def order_detail(self, order_id):
+        return self._call("GET", f"/api/v1/orders/{order_id}").get("result")
+
+    def wait_fill(self, order_id, timeout=90, poll=3):
+        """체결될 때까지 기다렸다가 **실제 체결가·수량**을 돌려준다.
+
+        ⚠️ 이게 없어서 상태파일에 **신호 기준일 종가**를 진입가로 적었다.
+        2026-08-31 실측: TEAM 기록 $185.62 vs 실제 체결 $194.97(+5.04%),
+        MSTR 기록 $137.40 vs 실제 $127.21(−7.42%). 주말 갭 때문이다.
+        진입가가 틀리면 **트레일링 손절선도 틀린다** — 기록만의 문제가 아니다.
+
+        반환 {"qty", "fill_price", "amount", "status"} 또는 None."""
+        import time as _t
+        end = _t.time() + timeout
+        last = None
+        while _t.time() < end:
+            try:
+                d = self.order_detail(order_id) or {}
+            except Exception:
+                d = {}
+            last = d
+            st = str(d.get("status") or "").upper()
+            q = d.get("quantity")
+            if st == "FILLED" and q:
+                qf = float(q)
+                amt = float(d.get("orderAmount") or 0) or None
+                px = (amt / qf) if (amt and qf) else (
+                    float(d["price"]) if d.get("price") else None)
+                return {"qty": qf, "fill_price": px, "amount": amt, "status": st}
+            if st in ("CANCELED", "CANCELLED", "REJECTED"):
+                return {"qty": 0.0, "fill_price": None, "amount": None, "status": st}
+            _t.sleep(poll)
+        return {"qty": None, "fill_price": None, "amount": None,
+                "status": str((last or {}).get("status") or "TIMEOUT")}
+
     def cancel(self, order_id, confirm=False):
         if os.environ.get("TOSS_LIVE") != "1" or not confirm:
             return DryRun({"would_cancel": order_id})

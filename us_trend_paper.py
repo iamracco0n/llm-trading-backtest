@@ -205,13 +205,27 @@ def main(a):
             t = Toss()
             # ★ 금액 기반(orderAmount). amt 를 수량 자리에 넘기면 24주를 사려 든다.
             r = t.order(s, side="BUY", market="US", amount=amt, confirm=True)
-            print(f"  ▶ [실주문] {s} ${amt:.2f} → {r}")
+            oid = ((r or {}).get("result") or {}).get("orderId")
+            print(f"  ▶ [실주문] {s} ${amt:.2f}  orderId={str(oid)[:16]}…")
+            # ★ 신호가(전일 종가)가 아니라 **실제 체결가**를 기록한다.
+            #   틀린 진입가는 트레일링 손절선까지 틀리게 만든다.
+            fill = t.wait_fill(oid) if oid else None
+            if fill and fill.get("fill_price") and fill.get("qty"):
+                qty, entry = fill["qty"], fill["fill_price"]
+                gap = (entry / px - 1) * 100
+                print(f"      체결 {qty:.6f}주 @${entry:,.4f} "
+                      f"(신호가 ${px:,.2f} 대비 {gap:+.2f}%)")
+            else:
+                qty, entry = amt / px, px
+                print(f"      ⚠️ 체결 확인 실패({(fill or {}).get('status')}) — "
+                      f"신호가로 임시 기록. 다음 실행 때 실계좌와 대조할 것")
         else:
+            qty, entry = amt / px, px
             print(f"  ▶ [페이퍼] 매수 {s} ${amt:.2f} @{px:,.2f} "
                   f"(모멘텀 {m*100:+.1f}%)")
         st["cash"] -= amt
-        st["pos"][s] = {"qty": amt / px, "entry": px, "peak": px,
-                        "date": today, "name": nm}
+        st["pos"][s] = {"qty": qty, "entry": entry, "peak": entry,
+                        "date": today, "name": nm, "signal_px": px}
 
     mv = st["cash"] + sum(p["qty"] * ind[s][1]["close"]
                           for s, p in st["pos"].items() if s in ind)
