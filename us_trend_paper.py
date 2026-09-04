@@ -153,20 +153,54 @@ def check_freshness(ind):
                        "(공휴일이면 정상 동작이다. 강제하려면 ALLOW_STALE=1)")
 
 
+def toss_candles(t, sym, count=200):
+    """토스 API 일봉 → DataFrame(Open/High/Low/Close), 날짜 인덱스.
+
+    ★ FinanceDataReader 를 버리고 여기로 옮긴 이유:
+    **FDR 의 미국 일봉이 한 세션씩 늦다.** 2026-09-04 09:34 KST 기준으로 FDR 의
+    마지막 봉은 9/2 였고 9/3 이 통째로 없었다. 그날 MSTR 은 $123.19 → $144.87 로
+    **+17.6% 튀었는데** 그걸 못 보고 있었다. 8/31 첫 실주문이 8/27 데이터로 나간 것도
+    같은 원인이다.
+
+    증권사 API 에 캔들이 있는데 늦는 제3자 소스를 쓸 이유가 없다. 게다가
+    **주문을 내는 곳과 시세를 보는 곳이 같아야** 체결가와 신호가 어긋나지 않는다.
+
+    ⚠️ 최대 200봉. MA120 + 여유를 쓰므로 충분하지만 더 긴 지표는 못 쓴다."""
+    r = t._call("GET", "/api/v1/candles",
+                {"symbol": sym, "market": "US", "interval": "1d",
+                 "count": count, "adjusted": "true"})
+    rows = ((r or {}).get("result") or {}).get("candles") or []
+    if not rows:
+        return None
+    recs = []
+    for c in rows:
+        recs.append({
+            "date": pd.Timestamp(c["timestamp"]).date(),
+            "Open": float(c["openPrice"]), "High": float(c["highPrice"]),
+            "Low": float(c["lowPrice"]), "Close": float(c["closePrice"])})
+    d = pd.DataFrame(recs).set_index("date").sort_index()
+    d.index = pd.to_datetime(d.index)
+    return d
+
+
 def fetch_all(syms):
-    import FinanceDataReader as fdr
-    since = (dt.date.today() - dt.timedelta(days=500)).isoformat()
+    from toss_trade import Toss
+    t = Toss()
 
     def one(it):
         s, n = it
         try:
-            x = indicators(fdr.DataReader(s, since))
+            d = toss_candles(t, s)
+            if d is None:
+                return None
+            x = indicators(d)
             return (s, n, x) if x else None
         except Exception:
             return None
 
     out, done, t0 = {}, 0, time.time()
-    ex = ThreadPoolExecutor(max_workers=8)
+    # MARKET_DATA 는 초당 15 제한이라 워커를 낮춘다(429 방지)
+    ex = ThreadPoolExecutor(max_workers=6)
     futs = {ex.submit(one, it): it for it in syms}
     try:
         for fu in as_completed(futs, timeout=DEADLINE):
