@@ -279,6 +279,14 @@ def main(a):
           f"슬롯{SLOTS} 국면필터없음")
     print(f"  신호 기준: 미국 {us_today()} **이전** 완료 세션")
 
+    # ── 하루 한 번 보장 ──
+    # 22:40 본 실행 + 23:40 예비 실행을 둔다(DNS 장애로 7일 중 4일 실패한 적이 있다).
+    # 예비 실행은 **그날 본 실행이 이미 성공했으면 아무것도 안 한다.** 판단은 하루 한 번,
+    # 실패한 날만 메운다. 수동으로 다시 돌려도 같은 날 두 번 매매하지 않는다.
+    if not a.signals and st.get("last_ok") == today and not a.force:
+        print(f"  오늘({today}) 이미 성공적으로 실행됨 — 종료 (강제하려면 --force)")
+        return
+
     from toss_trade import Toss
     t = Toss()
     live = a.live and not a.signals
@@ -339,9 +347,21 @@ def main(a):
                              "tainted": bool(p.get("tainted"))})
         print(f"      수익 {ret:+.2f}%{'  (오염 표시 거래)' if p.get('tainted') else ''}")
         del st["pos"][sym]
+        save_state(st)      # ★ 주문 하나마다 즉시 저장 — 도중에 죽어도 중복 매매 방지
 
     # ── ② 신규 진입 (슬롯이 비었을 때만 유니버스를 받는다) ──
-    free = SLOTS - len(st["pos"])
+    held_now = set(st["pos"])
+    if live:
+        # 장부만 믿지 않는다. 산 직후 저장 전에 죽은 경우 실계좌엔 있고 장부엔 없다 —
+        # 그 상태로 예비 실행이 돌면 **같은 종목을 또 사거나 슬롯을 초과**한다.
+        acct = account_positions(t)
+        held_now |= set(acct)
+        st["cash"] = float(t.buying_power("USD")["cashBuyingPower"])
+        orphan = set(acct) - set(st["pos"])
+        if orphan:
+            print(f"  ⚠️ 실계좌엔 있고 장부엔 없는 종목 {sorted(orphan)} — 슬롯으로 세고 "
+                  f"신규 매수에서 제외(수동 확인 필요)")
+    free = SLOTS - len(held_now)
     if free > 0 or a.signals:
         syms = symbols()
         print(f"\n  빈 슬롯 {free} — 유니버스 {len(syms)}종목 조회...", flush=True)
@@ -363,7 +383,7 @@ def main(a):
                             and not np.isnan(x["mom"])), reverse=True)
             print(f"  돌파 후보 {len(cands)}개")
             picks = [(s_, nm, px, m) for m, s_, nm, px in cands
-                     if s_ not in st["pos"]][:max(free, 0)]
+                     if s_ not in held_now][:max(free, 0)]
             for s_, nm, px, m in (picks if not a.signals else []):
                 slot = st["cash"] / max(free, 1)
                 amt = min(slot, st["cash"])
@@ -386,6 +406,7 @@ def main(a):
                 free -= 1
                 st["pos"][s_] = {"qty": qty, "entry": entry, "peak": entry,
                                  "date": today, "name": nm, "signal_px": px}
+                save_state(st)      # ★ 즉시 저장
             if a.signals:
                 for m, s_, nm, px in cands[:8]:
                     print(f"    {s_:<6}{nm[:22]:<24}${px:>9,.2f}  {m*100:+.1f}%")
@@ -410,12 +431,15 @@ def main(a):
     if st["closed"]:
         print(f"  청산 {len(st['closed'])}건 (판정용·비오염 {len(clean)}건)")
     st["equity"].append([today, round(mv, 4)])
+    st["last_ok"] = today           # ★ 여기까지 와야 '오늘 성공' — 예비 실행이 이걸 본다
     save_state(st)
-    print(f"  {'실주문 모드' if live else '페이퍼 모드'} 종료")
+    print(f"  {'실주문 모드' if live else '페이퍼 모드'} 종료 · last_ok={today}")
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--live", action="store_true")
     p.add_argument("--signals", action="store_true")
+    p.add_argument("--force", action="store_true",
+                   help="오늘 이미 성공했어도 다시 실행(수동 전용)")
     main(p.parse_args())
