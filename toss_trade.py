@@ -135,17 +135,35 @@ class Toss:
             if data is None:
                 data = b"{}"
         req = urllib.request.Request(url, data=data, headers=h, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read() or b"{}")
-        except urllib.error.HTTPError as e:
+        # ⚠️ 젯슨 DNS(테일스케일 100.100.100.100)가 부하 중 간헐적으로 튕긴다.
+        # 이 때문에 7일 중 4일 봇이 통째로 멈췄다. 네트워크 계열 실패와 429 는
+        # 재시도한다. 단 **주문(POST /orders)은 재시도하지 않는다** — 첫 요청이
+        # 실제로는 접수됐는데 응답만 못 받은 경우 중복 주문이 된다.
+        retry_ok = not (method == "POST" and path.startswith("/api/v1/orders"))
+        tries = 4 if retry_ok else 1
+        for k in range(tries):
             try:
-                j = json.loads(e.read() or b"{}")
-            except Exception:
-                j = {}
-            err = (j.get("error") or {}) if isinstance(j, dict) else {}
-            raise TossError(f"HTTP {e.code} {err.get('code','')} "
-                            f"{err.get('message','')} ({method} {path})") from None
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and k < tries - 1:
+                    time.sleep(2 * (k + 1))
+                    continue
+                return self._raise_http(e, method, path)
+            except (urllib.error.URLError, TimeoutError, OSError):
+                if k < tries - 1:
+                    time.sleep(2 * (k + 1))
+                    continue
+                raise
+
+    def _raise_http(self, e, method, path):
+        try:
+            j = json.loads(e.read() or b"{}")
+        except Exception:
+            j = {}
+        err = (j.get("error") or {}) if isinstance(j, dict) else {}
+        raise TossError(f"HTTP {e.code} {err.get('code','')} "
+                        f"{err.get('message','')} ({method} {path})") from None
 
     def _first_seq(self):
         r = self._call("GET", "/api/v1/accounts", need_acct=False).get("result") or []
@@ -264,7 +282,13 @@ class Toss:
             body["orderAmount"] = f"{float(amount):.2f}"
         else:
             q = float(qty)
-            body["quantity"] = str(int(q)) if q == int(q) else repr(q)
+            if q == int(q):
+                body["quantity"] = str(int(q))
+            else:
+                # 소수점 6자리까지만 허용. **내림** — 반올림하면 보유량을 넘겨 거부된다.
+                import math as _m
+                qf = _m.floor(q * 1_000_000) / 1_000_000
+                body["quantity"] = f"{qf:.6f}".rstrip("0").rstrip(".")
             body["orderType"] = "LIMIT" if price else "MARKET"
             if price:
                 body["price"] = str(price)

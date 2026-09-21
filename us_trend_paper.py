@@ -221,109 +221,197 @@ def fetch_all(syms):
     return out
 
 
+def fetch_one(t, sym, since=None, tries=4):
+    """보유 종목용 — **반드시 받아낸다.** DNS 가 간헐적으로 튕기므로 재시도한다.
+
+    `since`(진입일)를 주면 그 이후 완료 세션들의 **최고가(peak_since)** 도 돌려준다.
+    ⚠️ 최고가를 '실행한 날의 고가'로만 누적했더니, 봇이 조회 실패로 건너뛴 날의
+    고가를 놓쳐 MSTR 손절선이 $133.78 이어야 할 것이 $124.82 로 덜 올라왔다.
+    캔들에서 매번 다시 계산하면 건너뛴 날이 있어도 손절선이 정확하다."""
+    import time as _t
+    for k in range(tries):
+        try:
+            d = toss_candles(t, sym)
+            if d is not None:
+                x = indicators(d)
+                if x:
+                    if since:
+                        dd = d[(d.index.date >= dt.date.fromisoformat(since))
+                               & (d.index.date < us_today())]
+                        x["peak_since"] = float(dd["High"].max()) if len(dd) else None
+                    return x
+        except Exception:
+            pass
+        _t.sleep(2 * (k + 1))
+    return None
+
+
+def account_positions(t):
+    """실계좌 보유(심볼 → 수량, 평단, 현재가). 매도 수량은 **이것**을 쓴다."""
+    h = t.holdings(market="US") or {}
+    items = []
+    for v in (h.values() if isinstance(h, dict) else []):
+        if isinstance(v, list):
+            items = v
+    return {x["symbol"]: {"qty": float(x["quantity"]),
+                          "avg": float(x["averagePurchasePrice"]),
+                          "last": float(x["lastPrice"])} for x in items}
+
+
 def main(a):
+    """하루 1회. 순서가 중요하다 — **① 보유 종목 청산 판정 → ② 신규 진입.**
+
+    ⚠️ 2026-09-21 에 고친 것 셋 (전부 청산이 한 번도 안 나서 안 드러났다):
+      1. **실주문 모드에서 매도 주문을 아예 안 냈다.** 장부에서만 지우고 실제 주식은
+         그대로 뒀다. 손절선에 걸려도 **실제로는 절대 안 팔리는 구조**였다.
+      2. 유니버스 조회가 70% 미만이면 **통째로 중단**했다. 7일 중 4일이 그랬고
+         그날은 **손절 판정도 안 했다.** 급락했으면 못 팔았다.
+         → 이제 조회 부족은 **신규 진입만** 막는다. 청산 판정은 보유 종목을
+           따로(재시도 포함) 받아서 반드시 한다.
+      3. 조회가 반쯤 된 날 보유 종목이 빠져 평가액을 −70% 로 기록했다(실제 +7.65%).
+         → 실주문 모드에선 **실계좌 잔고**로 평가액을 기록한다.
+    """
     st = load_state()
     today = dt.date.today().isoformat()
     print(f"===== 미장 추세추종 {'[실주문]' if a.live else '[페이퍼]'}  {today} "
           f"(시작 {st['start']}) =====")
     print(f"  규칙: DC{DC_ENTRY} MA{MA_TREND} 샹들리에{CHAND}xATR 모멘텀{MOM} "
           f"슬롯{SLOTS} 국면필터없음")
+    print(f"  신호 기준: 미국 {us_today()} **이전** 완료 세션")
 
-    syms = symbols()
-    print(f"  신호 기준: 미국 {us_today()} **이전** 완료 세션 (장중 미완성 봉 제외)")
-    print(f"  유니버스 {len(syms)}종목 조회...", flush=True)
-    ind = fetch_all(syms)
-    print(f"  조회 {len(ind)}/{len(syms)}종목")
-    if len(ind) < len(syms) * 0.7:
-        raise RuntimeError("조회 부족 — 신호 왜곡. 오늘은 기록하지 않는다.")
-    asof = check_freshness(ind)     # ★ 묵은 데이터면 여기서 멈춘다
+    from toss_trade import Toss
+    t = Toss()
+    live = a.live and not a.signals
+    if live and os.environ.get("TOSS_LIVE") != "1":
+        print("  ⚠️ --live 인데 TOSS_LIVE!=1 — 페이퍼로만 진행")
+        live = False
 
-    slot = CAP_USD / SLOTS
-
-    # 청산
-    for s in list(st["pos"]):
-        if s not in ind:
+    # ── ① 보유 종목 청산 판정 (유니버스 조회와 무관하게 반드시) ──
+    acct = account_positions(t) if live else {}
+    exp = expected_session()
+    for sym in list(st["pos"]):
+        p = st["pos"][sym]
+        x = fetch_one(t, sym, since=p.get("date"))
+        if x is None:
+            print(f"  ⚠️ {sym} 시세 조회 실패(재시도 4회) — 오늘 청산 판정 불가")
             continue
-        name, x = ind[s]
-        p = st["pos"][s]
-        p["peak"] = max(p["peak"], x["high"])
-        if x["close"] <= p["peak"] - CHAND * x["atr"]:
-            st["cash"] += p["qty"] * x["close"] * (1 - COST / 100)
-            r = (x["close"] / p["entry"] - 1) * 100 - COST
-            st["closed"].append({"sym": s, "name": name, "ret": round(r, 2),
-                                 "in": p["date"], "out": today})
-            print(f"  ▣ 청산 {s} ({name[:18]}) {r:+.2f}%")
-            del st["pos"][s]
+        if x["asof"] != exp and os.environ.get("ALLOW_STALE") != "1":
+            print(f"  ⚠️ {sym} 데이터 {x['asof']} ≠ 예상 {exp} — 판정 보류")
+            continue
+        p["peak"] = max(p["peak"], x["high"], x.get("peak_since") or 0)
+        stop = p["peak"] - CHAND * x["atr"]
+        p["stop"] = round(stop, 4)
+        print(f"  · {sym:<6} 종가 ${x['close']:,.2f}  손절선 ${stop:,.2f}  "
+              f"여유 {(x['close']/stop-1)*100:+.1f}%")
+        if x["close"] > stop:
+            continue
+        # 손절선 이탈 → 매도
+        if a.signals:
+            print(f"  ▣ [신호만] {sym} 청산 대상")
+            continue
+        if live:
+            q = acct.get(sym, {}).get("qty")
+            if not q:
+                print(f"  ⚠️ {sym} 실계좌에 없음 — 장부만 정리")
+                exit_px, got = x["close"], 0.0
+            else:
+                # 미장 시장가 매도는 소수점 수량 허용(정규장 마감 1시간 전까지)
+                r = t.order(sym, qty=q, side="SELL", market="US", confirm=True)
+                oid = ((r or {}).get("result") or {}).get("orderId")
+                fill = t.wait_fill(oid) if oid else None
+                if fill and fill.get("qty"):
+                    amt = fill.get("amount")
+                    exit_px = (amt / fill["qty"]) if amt else x["close"]
+                    got = fill["qty"] * exit_px
+                    print(f"  ▣ [실매도] {sym} {q:.6f}주 @${exit_px:,.2f}")
+                else:
+                    print(f"  ⚠️ {sym} 매도 체결 확인 실패({(fill or {}).get('status')}) "
+                          f"— 장부 유지, 다음 실행 때 재시도")
+                    continue
+        else:
+            exit_px = x["close"]
+            got = p["qty"] * exit_px
+            print(f"  ▣ [페이퍼] 청산 {sym} @${exit_px:,.2f}")
+        st["cash"] += got * (1 - COST / 100 / 2) if not live else got
+        ret = (exit_px / p["entry"] - 1) * 100 - COST
+        st["closed"].append({"sym": sym, "name": p.get("name", ""), "ret": round(ret, 2),
+                             "in": p["date"], "out": today,
+                             "tainted": bool(p.get("tainted"))})
+        print(f"      수익 {ret:+.2f}%{'  (오염 표시 거래)' if p.get('tainted') else ''}")
+        del st["pos"][sym]
 
-    # 후보
-    cands = sorted(((x["mom"], s, nm, x["close"])
-                    for s, (nm, x) in ind.items()
-                    if x["close"] > x["dc"] and x["close"] > x["ma"]
-                    and not np.isnan(x["mom"])), reverse=True)
-    print(f"\n  돌파 후보 {len(cands)}개 | 보유 {len(st['pos'])}/{SLOTS}")
-    print(f"  {'순위':<4}{'심볼':<7}{'종목':<24}{'현재가':>10}{'모멘텀':>9}")
-    print("  " + "-" * 56)
-    picks = []
-    for i, (m, s, nm, px) in enumerate(cands[:8], 1):
-        mark = ""
-        if s not in st["pos"] and len(st["pos"]) + len(picks) < SLOTS:
-            picks.append((s, nm, px, m))
-            mark = "  ← 매수대상"
-        print(f"  {i:<4}{s:<7}{nm[:22]:<24}{px:>10,.2f}{m*100:>8.1f}%{mark}")
+    # ── ② 신규 진입 (슬롯이 비었을 때만 유니버스를 받는다) ──
+    free = SLOTS - len(st["pos"])
+    if free > 0 or a.signals:
+        syms = symbols()
+        print(f"\n  빈 슬롯 {free} — 유니버스 {len(syms)}종목 조회...", flush=True)
+        ind = fetch_all(syms)
+        print(f"  조회 {len(ind)}/{len(syms)}종목")
+        ok_uni = len(ind) >= len(syms) * 0.7
+        if not ok_uni:
+            print("  ⚠️ 조회 부족 — 신호 왜곡 우려로 **신규 진입만** 건너뛴다(청산은 위에서 끝남)")
+        else:
+            try:
+                check_freshness(ind)
+            except RuntimeError as e:
+                print(f"  ⚠️ {e}")
+                ok_uni = False
+        if ok_uni:
+            cands = sorted(((x["mom"], s_, nm, x["close"])
+                            for s_, (nm, x) in ind.items()
+                            if x["close"] > x["dc"] and x["close"] > x["ma"]
+                            and not np.isnan(x["mom"])), reverse=True)
+            print(f"  돌파 후보 {len(cands)}개")
+            picks = [(s_, nm, px, m) for m, s_, nm, px in cands
+                     if s_ not in st["pos"]][:max(free, 0)]
+            for s_, nm, px, m in (picks if not a.signals else []):
+                slot = st["cash"] / max(free, 1)
+                amt = min(slot, st["cash"])
+                if amt < 1:
+                    continue
+                if live:
+                    r = t.order(s_, side="BUY", market="US", amount=amt, confirm=True)
+                    oid = ((r or {}).get("result") or {}).get("orderId")
+                    fill = t.wait_fill(oid) if oid else None
+                    if not (fill and fill.get("qty") and fill.get("fill_price")):
+                        print(f"  ⚠️ {s_} 매수 체결 확인 실패 — 기록 안 함")
+                        continue
+                    qty, entry = fill["qty"], fill["fill_price"]
+                    print(f"  ▶ [실매수] {s_} ${amt:.2f} → {qty:.6f}주 @${entry:,.2f} "
+                          f"(신호가 대비 {(entry/px-1)*100:+.2f}%)")
+                else:
+                    qty, entry = amt / px, px
+                    print(f"  ▶ [페이퍼] {s_} ${amt:.2f} @${px:,.2f}")
+                st["cash"] -= amt
+                free -= 1
+                st["pos"][s_] = {"qty": qty, "entry": entry, "peak": entry,
+                                 "date": today, "name": nm, "signal_px": px}
+            if a.signals:
+                for m, s_, nm, px in cands[:8]:
+                    print(f"    {s_:<6}{nm[:22]:<24}${px:>9,.2f}  {m*100:+.1f}%")
+    else:
+        print(f"\n  슬롯 {SLOTS}/{SLOTS} 가득 — 신규 진입 없음(유니버스 조회 생략)")
 
     if a.signals:
-        print(f"\n  --signals 이므로 주문/기록 없음. 슬롯당 ${slot:.2f}")
         return
 
-    # 진입
-    for s, nm, px, m in picks:
-        amt = min(slot, st["cash"])
-        if amt < 1:
-            continue
-        if a.live:
-            if os.environ.get("TOSS_LIVE") != "1":
-                print(f"  ⚠️ --live 인데 TOSS_LIVE!=1 — 주문하지 않는다")
-                break
-            from toss_trade import Toss
-            t = Toss()
-            # ★ 금액 기반(orderAmount). amt 를 수량 자리에 넘기면 24주를 사려 든다.
-            r = t.order(s, side="BUY", market="US", amount=amt, confirm=True)
-            oid = ((r or {}).get("result") or {}).get("orderId")
-            print(f"  ▶ [실주문] {s} ${amt:.2f}  orderId={str(oid)[:16]}…")
-            # ★ 신호가(전일 종가)가 아니라 **실제 체결가**를 기록한다.
-            #   틀린 진입가는 트레일링 손절선까지 틀리게 만든다.
-            fill = t.wait_fill(oid) if oid else None
-            if fill and fill.get("fill_price") and fill.get("qty"):
-                qty, entry = fill["qty"], fill["fill_price"]
-                gap = (entry / px - 1) * 100
-                print(f"      체결 {qty:.6f}주 @${entry:,.4f} "
-                      f"(신호가 ${px:,.2f} 대비 {gap:+.2f}%)")
-            else:
-                qty, entry = amt / px, px
-                print(f"      ⚠️ 체결 확인 실패({(fill or {}).get('status')}) — "
-                      f"신호가로 임시 기록. 다음 실행 때 실계좌와 대조할 것")
-        else:
-            qty, entry = amt / px, px
-            print(f"  ▶ [페이퍼] 매수 {s} ${amt:.2f} @{px:,.2f} "
-                  f"(모멘텀 {m*100:+.1f}%)")
-        st["cash"] -= amt
-        st["pos"][s] = {"qty": qty, "entry": entry, "peak": entry,
-                        "date": today, "name": nm, "signal_px": px}
-
-    mv = st["cash"] + sum(p["qty"] * ind[s][1]["close"]
-                          for s, p in st["pos"].items() if s in ind)
-    print(f"\n  평가액 ${mv:,.2f} ({(mv/CAP_USD-1)*100:+.2f}%)")
-    for s, p in st["pos"].items():
-        cur = ind[s][1]["close"] if s in ind else p["entry"]
-        print(f"    {s:<6} {p['qty']:.4f}주 @{p['entry']:,.2f} → {cur:,.2f} "
-              f"({(cur/p['entry']-1)*100:+.1f}%)")
+    # ── ③ 평가액: 실주문이면 **실계좌**로 ──
+    if live:
+        acct = account_positions(t)
+        cash = float(t.buying_power("USD")["cashBuyingPower"])
+        mv = cash + sum(v["qty"] * v["last"] for v in acct.values())
+        st["cash"] = cash
+        src = "실계좌"
+    else:
+        mv = st["cash"] + sum(p["qty"] * p["entry"] for p in st["pos"].values())
+        src = "장부"
+    print(f"\n  평가액({src}) ${mv:,.2f} ({(mv/CAP_USD-1)*100:+.2f}%)")
+    clean = [c["ret"] for c in st["closed"] if not c.get("tainted")]
     if st["closed"]:
-        r = [c["ret"] for c in st["closed"]]
-        print(f"  청산 {len(r)}건 | 거래당 {np.mean(r):+.2f}% | "
-              f"승률 {100*np.mean([x>0 for x in r]):.0f}%")
+        print(f"  청산 {len(st['closed'])}건 (판정용·비오염 {len(clean)}건)")
     st["equity"].append([today, round(mv, 4)])
     save_state(st)
-    print(f"  {'실주문 실행됨' if a.live else '실주문 없음(페이퍼)'}")
+    print(f"  {'실주문 모드' if live else '페이퍼 모드'} 종료")
 
 
 if __name__ == "__main__":
